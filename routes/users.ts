@@ -201,7 +201,7 @@ router.post('/login', async (req: Request, res: Response) => {
       .eq('id', data.user.id)
       .single();
 
-    if (!userData?.email_verified) {
+    if (!data.user.email_confirmed_at) {
       console.log('Email not verified for user:', data.user.id);
       return res.status(403).json({ error: 'Email not verified' });
     }

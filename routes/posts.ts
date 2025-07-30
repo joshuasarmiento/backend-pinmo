@@ -236,15 +236,53 @@ router.get('/', async (req: Request, res: Response) => {
     const ascending = sortOrder === 'asc';
     query = query.order(sortKey as string, { ascending });
 
-    const { data, error } = await query;
+    const { data: posts, error } = await query;
 
     if (error) {
       console.error('Database error:', error);
       return res.status(500).json({ error: 'Failed to fetch posts' });
     }
 
-    console.log('Posts fetched successfully:', data?.length || 0, 'posts');
-    res.json(data || []);
+    // Get unique user IDs from posts
+    const userIds = [...new Set(posts.map(post => post.user_id).filter(Boolean))];
+    
+    // Get user information from Supabase Auth
+    const postsWithUsers = await Promise.all(posts.map(async (post) => {
+      if (post.user_id) {
+        try {
+          const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(post.user_id);
+          
+          if (!userError && user) {
+            return {
+              ...post,
+              user: {
+                id: user.id,
+                email: user.email,
+                full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Anonymous',
+                profile_picture: user.user_metadata?.profile_picture || null,
+                email_verified: user.email_confirmed_at ? true : false
+              }
+            };
+          }
+        } catch (authError) {
+          console.warn('Failed to get user info for:', post.user_id, authError);
+        }
+      }
+      // Return post without user info if user fetch failed
+      return {
+        ...post,
+        user: {
+          id: post.user_id,
+          email: 'unknown@example.com',
+          full_name: 'Anonymous User',
+          profile_picture: null,
+          email_verified: false
+        }
+      };
+    }));
+
+    console.log('Posts fetched successfully:', postsWithUsers.length, 'posts');
+    res.json(postsWithUsers);
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({ error: 'Failed to fetch posts' });
