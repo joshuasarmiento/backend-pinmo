@@ -289,6 +289,65 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
+// Get post by ID
+router.get('/:newId', async (req: Request, res: Response) => {
+  try {
+    const newId = req.params.newId;
+
+    console.log('Fetching post by new_id:', newId);
+
+    const { data: post, error } = await supabase
+      .from('posts')
+      .select('*')
+      .eq('new_id', newId)
+      .single();
+
+    if (error || !post) {
+      console.log('Post not found for new_id:', newId);
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    // Get user information for the post
+    let postWithUser = post;
+    if (post.user_id) {
+      try {
+        const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(post.user_id);
+        
+        if (!userError && user) {
+          postWithUser = {
+            ...post,
+            user: {
+              id: user.id,
+              email: user.email,
+              full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Anonymous',
+              profile_picture: user.user_metadata?.profile_picture || null,
+              email_verified: user.email_confirmed_at ? true : false
+            }
+          };
+        }
+      } catch (authError) {
+        console.warn('Failed to get user info for post:', post.user_id, authError);
+        postWithUser = {
+          ...post,
+          user: {
+            id: post.user_id,
+            email: 'unknown@example.com',
+            full_name: 'Anonymous User',
+            profile_picture: null,
+            email_verified: false
+          }
+        };
+      }
+    }
+
+    console.log('Post fetched successfully by new_id:', newId);
+    res.json(postWithUser);
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({ error: 'Failed to fetch post' });
+  }
+});
+
 // Update post
 router.put('/:id', authenticate, async (req: Request, res: Response) => {
   try {
