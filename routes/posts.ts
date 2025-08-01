@@ -1,111 +1,30 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { supabase } from '../utils/supabase';
 import multer from 'multer';
-import { v4 as uuidv4 } from 'uuid';
+import {
+  enhancedFileUpload,
+  rateLimit,
+  advancedRateLimit,
+  comprehensiveValidation,
+  sanitizeForDatabase
+} from '../middleware/advancedPostValidation';
+import { authenticate } from '../middleware/auth';
+import { uploadImageToSupabase } from '../utils/uploadImageToSupabase';
 
 const router = Router();
 
-// Enhanced authentication middleware for posts
-const authenticate = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.log('Missing or invalid authorization header');
-      return res.status(401).json({ error: 'Auth session missing!' });
-    }
-
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-    
-    if (!token) {
-      console.log('Empty token provided');
-      return res.status(401).json({ error: 'Auth session missing!' });
-    }
-
-    console.log('Verifying token for posts endpoint...');
-    
-    // Verify token with Supabase
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    
-    if (error) {
-      console.log('Token verification error:', error.message);
-      return res.status(401).json({ error: 'Invalid or expired token' });
-    }
-
-    if (!user) {
-      console.log('No user found for token');
-      return res.status(401).json({ error: 'User not found' });
-    }
-
-    console.log('User authenticated successfully for posts:', user.id);
-    
-    // Attach user to request object
-    (req as any).user = user;
-    next();
-  } catch (error) {
-    console.error('Authentication middleware error:', error);
-    res.status(401).json({ error: 'Authentication failed' });
-  }
-};
-
-// Configure multer for file uploads with multiple file types
-const uploadFields = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit
-  },
-  fileFilter: (req, file, cb) => {
-    console.log('File filter - Field name:', file.fieldname, 'MIME type:', file.mimetype);
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed'));
-    }
-  }
-});
-
-// Helper function to upload image to Supabase Storage
-async function uploadImageToSupabase(file: Express.Multer.File, folder: string = 'posts'): Promise<string> {
-  try {
-    const fileName = `${uuidv4()}-${file.originalname}`;
-    const filePath = `${folder}/${fileName}`;
-
-    console.log(`Uploading ${folder} image to path:`, filePath);
-    console.log('File size:', file.size, 'bytes');
-    console.log('File type:', file.mimetype);
-
-    const { data, error } = await supabase.storage
-      .from('pinmo-images')
-      .upload(filePath, file.buffer, {
-        contentType: file.mimetype,
-        upsert: false
-      });
-
-    if (error) {
-      console.error('Supabase storage upload error:', error);
-      throw new Error(`Failed to upload image: ${error.message}`);
-    }
-
-    console.log(`${folder} image uploaded successfully:`, data.path);
-
-    // Get public URL
-    const { data: publicData } = supabase.storage
-      .from('pinmo-images')
-      .getPublicUrl(filePath);
-
-    console.log('Public URL generated:', publicData.publicUrl);
-    return publicData.publicUrl;
-  } catch (error) {
-    console.error('Upload helper error:', error);
-    throw error;
-  }
-}
-
 // Create post
-router.post('/', authenticate, uploadFields.fields([
-  { name: 'images', maxCount: 5 },
-  { name: 'custom_pin', maxCount: 1 }
-]), async (req: Request, res: Response) => {
+router.post(
+  '/', 
+  authenticate, 
+  advancedRateLimit,
+  rateLimit,
+  enhancedFileUpload.fields([
+    { name: 'images', maxCount: 5 },
+    { name: 'custom_pin', maxCount: 1 }
+  ]),
+  comprehensiveValidation,
+  async (req: Request, res: Response) => {
   try {
     const { type, description, lat, lng, location, link, emoji } = req.body;
     const userId = (req as any).user.id;
@@ -147,8 +66,21 @@ router.post('/', authenticate, uploadFields.fields([
       }
     }
 
-    if (!type || !description || !lat || !lng || !location) {
-      console.log('Missing required fields:', { type: !!type, description: !!description, lat: !!lat, lng: !!lng, location: !!location });
+    // Sanitize inputs before database insertion
+    const sanitizedType = sanitizeForDatabase(type);
+    const sanitizedDescription = sanitizeForDatabase(description);
+    const sanitizedLocation = sanitizeForDatabase(location);
+    const sanitizedLink = link ? sanitizeForDatabase(link) : null;
+    const sanitizedEmoji = emoji ? sanitizeForDatabase(emoji) : null;
+
+    if (!sanitizedType || !sanitizedDescription || !lat || !lng || !sanitizedLocation) {
+      console.log('Missing required fields:', {
+        type: !!sanitizedType,
+        description: !!sanitizedDescription,
+        lat: !!lat,
+        lng: !!lng,
+        location: !!sanitizedLocation
+      });
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
@@ -492,6 +424,18 @@ router.post('/:id/likes', authenticate, async (req: Request, res: Response) => {
 
     console.log('Adding like to post:', postId, 'by user:', userId);
 
+    // Check if user exists in users table
+    const { data: userExists } = await supabase
+      .from('users')
+      .select('id')
+      .eq('id', userId)
+      .single();
+      
+    if (!userExists) {
+      console.log('User not found in users table:', userId);
+      return res.status(400).json({ error: 'User not found in database' });
+    }
+
     // Check if user already liked this post
     const { data: existingLike } = await supabase
       .from('post_likes')
@@ -669,6 +613,354 @@ router.get('/:id/likes/status', authenticate, async (req: Request, res: Response
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({ error: 'Failed to get like status' });
+  }
+});
+
+// Get comments for a post
+router.get('/:newId/comments', async (req: Request, res: Response) => {
+  try {
+    const newId = req.params.newId;
+    const { page = 1, limit = 10 } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
+
+    console.log('Fetching comments for post new_id:', newId, 'page:', page, 'limit:', limit);
+
+    // First verify the post exists and get the integer ID
+    const { data: post, error: postError } = await supabase
+      .from('posts')
+      .select('id')
+      .eq('new_id', newId)
+      .single();
+
+    if (postError || !post) {
+      console.log('Post not found with new_id:', newId);
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    const postId = post.id;
+    console.log('Found post with integer ID:', postId);
+
+    // Get comments with user information
+    const { data: comments, error: commentsError } = await supabase
+      .from('comments')
+      .select('*')
+      .eq('post_id', postId)
+      .eq('is_deleted', false)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + Number(limit) - 1);
+
+    if (commentsError) {
+      console.error('Comments fetch error:', commentsError);
+      return res.status(500).json({ error: 'Failed to fetch comments' });
+    }
+
+    // Get user information for each comment
+    const commentsWithUsers = await Promise.all(comments.map(async (comment) => {
+      try {
+        const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(comment.user_id);
+        
+        if (!userError && user) {
+          return {
+            ...comment,
+            user: {
+              id: user.id,
+              email: user.email,
+              full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Anonymous',
+              profile_picture: user.user_metadata?.profile_picture || null
+            }
+          };
+        }
+      } catch (authError) {
+        console.warn('Failed to get user info for comment:', comment.id, authError);
+      }
+      
+      // Return comment with fallback user info
+      return {
+        ...comment,
+        user: {
+          id: comment.user_id,
+          email: 'unknown@example.com',
+          full_name: 'Anonymous User',
+          profile_picture: null
+        }
+      };
+    }));
+
+    console.log('Comments fetched successfully:', commentsWithUsers.length, 'comments');
+    res.json({ comments: commentsWithUsers });
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({ error: 'Failed to fetch comments' });
+  }
+});
+
+// Create a comment
+router.post('/:newId/comments', authenticate, async (req: Request, res: Response) => {
+  try {
+    const newId = req.params.newId;
+    const userId = (req as any).user.id;
+    const { content } = req.body;
+
+    console.log('Creating comment for post new_id:', newId, 'by user:', userId);
+
+    if (!content || !content.trim()) {
+      console.log('Missing or empty content');
+      return res.status(400).json({ error: 'Comment content is required' });
+    }
+
+    // Verify the post exists and get the integer ID
+    const { data: post, error: postError } = await supabase
+      .from('posts')
+      .select('id')
+      .eq('new_id', newId)
+      .single();
+
+    if (postError || !post) {
+      console.log('Post not found with new_id:', newId);
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    const postId = post.id;
+    console.log('Found post with integer ID:', postId);
+
+    // Create the comment
+    const { data: comment, error: commentError } = await supabase
+      .from('comments')
+      .insert({
+        post_id: postId,
+        user_id: userId,
+        content: content.trim(),
+        created_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+
+    if (commentError) {
+      console.error('Comment creation error:', commentError);
+      return res.status(500).json({ error: 'Failed to create comment' });
+    }
+
+    // Get user information for the response
+    let commentWithUser = comment;
+    try {
+      const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(userId);
+      
+      if (!userError && user) {
+        commentWithUser = {
+          ...comment,
+          user: {
+            id: user.id,
+            email: user.email,
+            full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Anonymous',
+            profile_picture: user.user_metadata?.profile_picture || null
+          }
+        };
+      }
+    } catch (authError) {
+      console.warn('Failed to get user info for new comment:', authError);
+      commentWithUser = {
+        ...comment,
+        user: {
+          id: userId,
+          email: 'unknown@example.com',
+          full_name: 'Anonymous User',
+          profile_picture: null
+        }
+      };
+    }
+
+    console.log('Comment created successfully:', comment.id);
+    res.status(201).json(commentWithUser);
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({ error: 'Failed to create comment' });
+  }
+});
+
+// Update a comment
+router.put('/:newId/comments/:commentId', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { newId, commentId } = req.params;
+    const userId = (req as any).user.id;
+    const { content } = req.body;
+
+    console.log('Updating comment:', commentId, 'for post new_id:', newId, 'by user:', userId);
+
+    if (!content || !content.trim()) {
+      console.log('Missing or empty content');
+      return res.status(400).json({ error: 'Comment content is required' });
+    }
+
+    // Get the post's integer ID
+    const { data: post, error: postError } = await supabase
+      .from('posts')
+      .select('id')
+      .eq('new_id', newId)
+      .single();
+
+    if (postError || !post) {
+      console.log('Post not found with new_id:', newId);
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    const postId = post.id;
+
+    // Verify the comment exists and belongs to the user
+    const { data: comment, error: commentError } = await supabase
+      .from('comments')
+      .select('*')
+      .eq('id', commentId)
+      .eq('post_id', postId)
+      .eq('is_deleted', false)
+      .single();
+
+    if (commentError || !comment) {
+      console.log('Comment not found:', commentId);
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+
+    if (comment.user_id !== userId) {
+      console.log('Unauthorized update attempt by user:', userId, 'for comment owned by:', comment.user_id);
+      return res.status(403).json({ error: 'Not authorized to update this comment' });
+    }
+
+    // Update the comment
+    const { error: updateError } = await supabase
+      .from('comments')
+      .update({
+        content: content.trim(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', commentId);
+
+    if (updateError) {
+      console.error('Comment update error:', updateError);
+      return res.status(500).json({ error: 'Failed to update comment' });
+    }
+
+    console.log('Comment updated successfully:', commentId);
+    res.json({ message: 'Comment updated successfully' });
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({ error: 'Failed to update comment' });
+  }
+});
+
+// Delete a comment (soft delete)
+router.delete('/:newId/comments/:commentId', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { newId, commentId } = req.params;
+    const userId = (req as any).user.id;
+
+    console.log('Deleting comment:', commentId, 'for post new_id:', newId, 'by user:', userId);
+
+    // Get the post's integer ID
+    const { data: post, error: postError } = await supabase
+      .from('posts')
+      .select('id')
+      .eq('new_id', newId)
+      .single();
+
+    if (postError || !post) {
+      console.log('Post not found with new_id:', newId);
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    const postId = post.id;
+
+    // Verify the comment exists
+    const { data: comment, error: commentError } = await supabase
+      .from('comments')
+      .select('*')
+      .eq('id', commentId)
+      .eq('post_id', postId)
+      .eq('is_deleted', false)
+      .single();
+
+    if (commentError || !comment) {
+      console.log('Comment not found:', commentId);
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+
+    // Check if user owns the comment or is an admin
+    let canDelete = comment.user_id === userId;
+    
+    if (!canDelete) {
+      // Check if user is an admin
+      const { data: admin, error: adminError } = await supabase
+        .from('admins')
+        .select('*')
+        .eq('email', (req as any).user.email)
+        .eq('is_active', true)
+        .single();
+
+      canDelete = !adminError && admin;
+    }
+
+    if (!canDelete) {
+      console.log('Unauthorized delete attempt by user:', userId, 'for comment owned by:', comment.user_id);
+      return res.status(403).json({ error: 'Not authorized to delete this comment' });
+    }
+
+    // Soft delete the comment
+    const { error: deleteError } = await supabase
+      .from('comments')
+      .update({
+        is_deleted: true,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', commentId);
+
+    if (deleteError) {
+      console.error('Comment delete error:', deleteError);
+      return res.status(500).json({ error: 'Failed to delete comment' });
+    }
+
+    console.log('Comment deleted successfully:', commentId);
+    res.json({ message: 'Comment deleted successfully' });
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({ error: 'Failed to delete comment' });
+  }
+});
+
+// Get comments count for a post
+router.get('/:newId/comments/count', async (req: Request, res: Response) => {
+  try {
+    const newId = req.params.newId;
+
+    console.log('Getting comments count for post new_id:', newId);
+
+    // Get the post's integer ID
+    const { data: post, error: postError } = await supabase
+      .from('posts')
+      .select('id')
+      .eq('new_id', newId)
+      .single();
+
+    if (postError || !post) {
+      console.log('Post not found with new_id:', newId);
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    const postId = post.id;
+
+    const { count, error } = await supabase
+      .from('comments')
+      .select('*', { count: 'exact', head: true })
+      .eq('post_id', postId)
+      .eq('is_deleted', false);
+
+    if (error) {
+      console.error('Comments count error:', error);
+      return res.status(500).json({ error: 'Failed to get comments count' });
+    }
+
+    console.log('Comments count:', count);
+    res.json({ count: count || 0 });
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({ error: 'Failed to get comments count' });
   }
 });
 

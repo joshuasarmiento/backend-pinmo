@@ -17,7 +17,7 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       return res.status(401).json({ error: 'Auth session missing!' });
     }
 
-    console.log('Verifying token for user...');
+    console.log('Verifying token...');
     
     // Verify token with Supabase
     const { data: { user }, error } = await supabase.auth.getUser(token);

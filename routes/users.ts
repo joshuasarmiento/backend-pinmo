@@ -1,52 +1,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { supabase } from '../utils/supabase';
 import multer from 'multer';
+import bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
+import { authenticate } from '../middleware/auth';
 
 const router = Router();
-
-// Enhanced authentication middleware
-const authenticate = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.log('Missing or invalid authorization header');
-      return res.status(401).json({ error: 'Auth session missing!' });
-    }
-
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-    
-    if (!token) {
-      console.log('Empty token provided');
-      return res.status(401).json({ error: 'Auth session missing!' });
-    }
-
-    console.log('Verifying token for user...');
-    
-    // Verify token with Supabase
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    
-    if (error) {
-      console.log('Token verification error:', error.message);
-      return res.status(401).json({ error: 'Invalid or expired token' });
-    }
-
-    if (!user) {
-      console.log('No user found for token');
-      return res.status(401).json({ error: 'User not found' });
-    }
-
-    console.log('User authenticated successfully:', user.id);
-    
-    // Attach user to request object
-    (req as any).user = user;
-    next();
-  } catch (error) {
-    console.error('Authentication middleware error:', error);
-    res.status(401).json({ error: 'Authentication failed' });
-  }
-};
+const SALT_ROUNDS = 10;
 
 // Configure multer for profile picture uploads
 const upload = multer({
@@ -101,12 +61,18 @@ async function uploadProfilePicture(file: Express.Multer.File, userId: string): 
   }
 }
 
-// Register user
+// Register endpoint with password hashing
 router.post('/register', async (req: Request, res: Response) => {
   try {
     const { full_name, email, password, full_address, latitude, longitude } = req.body;
 
     console.log('Registration attempt for email:', email);
+
+    // Validate required fields
+    if (!full_name || !email || !password || !full_address || !latitude || !longitude) {
+      console.log('Missing required fields:', { full_name, email, password, full_address, latitude, longitude });
+      return res.status(400).json({ error: 'All fields are required' });
+    }
 
     // Check if user already exists
     const { data: existingUser } = await supabase
@@ -119,6 +85,10 @@ router.post('/register', async (req: Request, res: Response) => {
       console.log('User already exists:', email);
       return res.status(400).json({ error: 'Email already exists' });
     }
+
+    // Hash the password
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+    console.log('Password hashed successfully for email:', email);
 
     // Create user with Supabase Auth
     const { data, error } = await supabase.auth.signUp({
@@ -146,17 +116,17 @@ router.post('/register', async (req: Request, res: Response) => {
 
     console.log('User created in auth:', data.user.id);
 
-    // Insert user data into users table
+    // Insert user data into users table with hashed password
     const { error: insertError } = await supabase
       .from('users')
       .insert({
         id: data.user.id,
         full_name,
         email,
+        password_hash: passwordHash,
         full_address,
         latitude,
         longitude,
-        status: 'pending',
         email_verified: false,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
@@ -172,6 +142,138 @@ router.post('/register', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Registration error:', error);
     res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+// Forgot Password endpoint
+router.post('/forgot-password', async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+
+    console.log('Password reset requested for email:', email);
+
+    // Validate email
+    if (!email) {
+      console.log('Missing email field');
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Check if user exists
+    const { data: user } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .single();
+
+    if (!user) {
+      console.log('User not found for email:', email);
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Generate reset token
+    const resetToken = uuidv4();
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour expiry
+
+    // Store reset token in users table
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({
+        reset_password_token: resetToken,
+        reset_password_expires: expiresAt.toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('email', email);
+
+    if (updateError) {
+      console.error('Failed to store reset token:', updateError);
+      return res.status(500).json({ error: 'Failed to initiate password reset' });
+    }
+
+    // Send password reset email via Supabase Auth
+    const { error: authError } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`
+    });
+
+    if (authError) {
+      console.error('Supabase reset password email error:', authError);
+      return res.status(500).json({ error: 'Failed to send reset email' });
+    }
+
+    console.log('Password reset email sent for:', email);
+    res.status(200).json({ message: 'Password reset email sent' });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ error: 'Failed to initiate password reset' });
+  }
+});
+
+// Reset Password endpoint
+router.post('/reset-password', async (req: Request, res: Response) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    console.log('Password reset attempt with token');
+
+    // Validate inputs
+    if (!token || !newPassword) {
+      console.log('Missing token or newPassword');
+      return res.status(400).json({ error: 'Token and new password are required' });
+    }
+
+    // Find user by reset token
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, reset_password_expires')
+      .eq('reset_password_token', token)
+      .single();
+
+    if (userError || !user) {
+      console.log('Invalid or expired token');
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    // Check if token is expired
+    const expiresAt = new Date(user.reset_password_expires);
+    if (expiresAt < new Date()) {
+      console.log('Token expired for user:', user.email);
+      return res.status(400).json({ error: 'Reset token has expired' });
+    }
+
+    // Hash new password
+    const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    console.log('New password hashed for user:', user.email);
+
+    // Update password in Supabase Auth
+    const { error: authError } = await supabase.auth.admin.updateUserById(user.id, {
+      password: newPassword
+    });
+
+    if (authError) {
+      console.error('Supabase password update error:', authError);
+      return res.status(500).json({ error: 'Failed to update password' });
+    }
+
+    // Update users table
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({
+        password_hash: passwordHash,
+        reset_password_token: null,
+        reset_password_expires: null,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', user.id);
+
+    if (updateError) {
+      console.error('Database update error:', updateError);
+      return res.status(500).json({ error: 'Failed to update user data' });
+    }
+
+    console.log('Password reset successfully for user:', user.email);
+    res.status(200).json({ message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
   }
 });
 
@@ -339,5 +441,7 @@ router.get('/profile', authenticate, async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Failed to fetch profile' });
   }
 });
+
+
 
 export default router;
