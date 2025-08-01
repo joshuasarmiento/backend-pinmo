@@ -32,15 +32,23 @@ interface PostBody {
 }
 
 // Add Tagalog curse words and inappropriate terms
-const tagalogBadWords: string[] = [
+const badWords: string[] = [
   'putang', 'tangina', 'gago', 'ulol', 'bobo', 'tanga', 
   'leche', 'pakyu', 'shet', 'buwisit', 'kupal', 'hinayupak',
   'kingina', 'tarantado', 'peste', 'inutil', 'walang kwenta', 
   'bwakang', 'kantot', 'chupa', 'jakol', 'tamod', 'titi', 
-  'puke', 'suso', 'libog'
+  'puke', 'suso', 'libog',
+  'fuck', 'shit', 'damn', 'bitch', 'asshole', 'bastard',
+  'crap', 'piss', 'cock', 'dick', 'pussy', 'whore', 'slut',
+  'motherfucker', 'cunt', 'fucker', 'jackass', 'retard', 'nigga', 'nigger',
+  'hoe', 'skank', 'faggot', 'twat', 'douche', 'dipshit', 'bullshit', 'hell',
+  'prick', 'bugger', 'suck', 'dumbass', 'fatass', 'shithead', 'goddamn',
+  'mofo', 'jerkoff', 'bastardo', 'mf', 'biatch', 'asswipe', 'cringeass',
+  'licker', 'sucker', 'nutsack', 'nutjob', 'crackhead', 'trashbag', 'smegma',
+  'wanker', 'git', 'bollocks', 'bloody', 'arsehole'
 ];
 
-filter.addWords(...tagalogBadWords);
+filter.addWords(...badWords);
 
 // Sexual content detection patterns
 const sexualContentPatterns: RegExp[] = [
@@ -385,7 +393,7 @@ export const comprehensiveValidation = async (
 export {
   Filter,
   validator,
-  tagalogBadWords,
+  badWords,
   sexualContentPatterns,
   maliciousUrlPatterns,
   blockedDomains

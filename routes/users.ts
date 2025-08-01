@@ -100,7 +100,8 @@ router.post('/register', async (req: Request, res: Response) => {
           full_address, 
           latitude, 
           longitude 
-        }
+        },
+        emailRedirectTo: 'http://localhost:5173'
       }
     });
 
@@ -114,28 +115,28 @@ router.post('/register', async (req: Request, res: Response) => {
       return res.status(500).json({ error: 'User creation failed' });
     }
 
-    console.log('User created in auth:', data.user.id);
+    // console.log('User created in auth:', data.user.id);
 
-    // Insert user data into users table with hashed password
-    const { error: insertError } = await supabase
-      .from('users')
-      .insert({
-        id: data.user.id,
-        full_name,
-        email,
-        password_hash: passwordHash,
-        full_address,
-        latitude,
-        longitude,
-        email_verified: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      });
+    // // Insert user data into users table with hashed password
+    // const { error: insertError } = await supabase
+    //   .from('users')
+    //   .insert({
+    //     id: data.user.id,
+    //     full_name,
+    //     email,
+    //     password_hash: passwordHash,
+    //     full_address,
+    //     latitude,
+    //     longitude,
+    //     email_verified: false,
+    //     created_at: new Date().toISOString(),
+    //     updated_at: new Date().toISOString()
+    //   });
 
-    if (insertError) {
-      console.error('Database insert error:', insertError);
-      return res.status(500).json({ error: 'Failed to save user data' });
-    }
+    // if (insertError) {
+    //   console.error('Database insert error:', insertError);
+    //   return res.status(500).json({ error: 'Failed to save user data' });
+    // }
 
     console.log('User registration completed successfully');
     res.status(201).json({ message: 'User registered', userId: data.user.id });
