@@ -31,31 +31,39 @@ interface PostBody {
   emoji?: string;
 }
 
+// Initialize bad-words filter
 let filter: any;
 
-(async () => {
-  const { Filter } = await import('bad-words');
-  filter = new Filter();
+const initializeFilter = async () => {
+  try {
+    const { Filter } = await import('bad-words');
+    filter = new Filter();
 
-  // Add Tagalog curse words and inappropriate terms
-  const badWords: string[] = [
-    'putang', 'tangina', 'gago', 'ulol', 'bobo', 'tanga', 
-    'leche', 'pakyu', 'shet', 'buwisit', 'kupal', 'hinayupak',
-    'kingina', 'tarantado', 'peste', 'inutil', 'walang kwenta', 
-    'bwakang', 'kantot', 'chupa', 'jakol', 'tamod', 'titi', 
-    'puke', 'suso', 'libog',
-    'fuck', 'shit', 'damn', 'bitch', 'asshole', 'bastard',
-    'crap', 'piss', 'cock', 'dick', 'pussy', 'whore', 'slut',
-    'motherfucker', 'cunt', 'fucker', 'jackass', 'retard', 'nigga', 'nigger',
-    'hoe', 'skank', 'faggot', 'twat', 'douche', 'dipshit', 'bullshit', 'hell',
-    'prick', 'bugger', 'suck', 'dumbass', 'fatass', 'shithead', 'goddamn',
-    'mofo', 'jerkoff', 'bastardo', 'mf', 'biatch', 'asswipe', 'cringeass',
-    'licker', 'sucker', 'nutsack', 'nutjob', 'crackhead', 'trashbag', 'smegma',
-    'wanker', 'git', 'bollocks', 'bloody', 'arsehole'
-  ];
+    // Add Tagalog curse words and inappropriate terms
+    const badWords: string[] = [
+      'putang', 'tangina', 'gago', 'ulol', 'bobo', 'tanga', 
+      'leche', 'pakyu', 'shet', 'buwisit', 'kupal', 'hinayupak',
+      'kingina', 'tarantado', 'peste', 'inutil', 'walang kwenta', 
+      'bwakang', 'kantot', 'chupa', 'jakol', 'tamod', 'titi', 
+      'puke', 'suso', 'libog',
+      'fuck', 'shit', 'damn', 'bitch', 'asshole', 'bastard',
+      'crap', 'piss', 'cock', 'dick', 'pussy', 'whore', 'slut',
+      'motherfucker', 'cunt', 'fucker', 'jackass', 'retard', 'nigga', 'nigger',
+      'hoe', 'skank', 'faggot', 'twat', 'douche', 'dipshit', 'bullshit', 'hell',
+      'prick', 'bugger', 'suck', 'dumbass', 'fatass', 'shithead', 'goddamn',
+      'mofo', 'jerkoff', 'bastardo', 'mf', 'biatch', 'asswipe', 'cringeass',
+      'licker', 'sucker', 'nutsack', 'nutjob', 'crackhead', 'trashbag', 'smegma',
+      'wanker', 'git', 'bollocks', 'bloody', 'arsehole'
+    ];
 
-  filter.addWords(...badWords);
-})();
+    filter.addWords(...badWords);
+  } catch (error) {
+    console.error('Failed to initialize bad-words filter:', error);
+  }
+};
+
+// Initialize filter immediately
+initializeFilter();
 
 // Sexual content detection patterns
 const sexualContentPatterns: RegExp[] = [
@@ -85,20 +93,19 @@ const blockedDomains: string[] = [
   'guerrillamail.com'
 ];
 
-// Content validation middleware
 export const validateContent = async (
-  req: AuthenticatedRequest, 
-  res: Response, 
+  req: AuthenticatedRequest,
+  res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
     const { description, link }: PostBody = req.body;
-    
+
     console.log('Validating content for user:', req.user.id);
 
     // Ensure filter is initialized
     if (!filter) {
-      throw new Error('Filter not initialized');
+      throw new Error('Profanity filter not initialized. Please try again later.');
     }
 
     // Validate description for profanity and sexual content
@@ -108,7 +115,7 @@ export const validateContent = async (
         error.statusCode = 400;
         throw error;
       }
-      
+
       for (const pattern of sexualContentPatterns) {
         if (pattern.test(description)) {
           const error: ValidationError = new Error('Content contains inappropriate material. Please modify your description.');
@@ -116,7 +123,7 @@ export const validateContent = async (
           throw error;
         }
       }
-      
+
       if (description.length > 500) {
         const error: ValidationError = new Error('Description is too long. Maximum 500 characters allowed.');
         error.statusCode = 400;
@@ -130,18 +137,18 @@ export const validateContent = async (
         throw error;
       }
     }
-    
+
     // Validate URLs
     if (link) {
-      if (!validator.isURL(link, { 
-        protocols: ['http', 'https'], 
-        require_protocol: true 
+      if (!validator.isURL(link, {
+        protocols: ['http', 'https'],
+        require_protocol: true,
       })) {
         const error: ValidationError = new Error('Invalid URL format. Please provide a valid HTTP/HTTPS URL.');
         error.statusCode = 400;
         throw error;
       }
-      
+
       for (const pattern of maliciousUrlPatterns) {
         if (pattern.test(link)) {
           const error: ValidationError = new Error('Suspicious URL detected. Please use direct links only.');
@@ -149,10 +156,10 @@ export const validateContent = async (
           throw error;
         }
       }
-      
+
       try {
         const urlDomain = new URL(link).hostname.toLowerCase();
-        if (blockedDomains.some(domain => urlDomain.includes(domain))) {
+        if (blockedDomains.some((domain) => urlDomain.includes(domain))) {
           const error: ValidationError = new Error('This domain is not allowed. Please use a different link.');
           error.statusCode = 400;
           throw error;
@@ -163,7 +170,7 @@ export const validateContent = async (
         throw error;
       }
     }
-    
+
     console.log('Content validation passed for user:', req.user.id);
     next();
   } catch (error: any) {

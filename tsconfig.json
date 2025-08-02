@@ -1,11 +1,12 @@
 {
   "compilerOptions": {
-    "target": "es6",
-    "module": "commonjs",
+    "target": "ES2018",
+    "module": "CommonJS",
     "outDir": "./dist",
     "rootDir": "./",
     "strict": true,
     "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    "moduleResolution": "node"
   }
 }
