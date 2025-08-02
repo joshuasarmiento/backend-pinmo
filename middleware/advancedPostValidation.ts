@@ -1,10 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import * as validator from 'validator';
 import multer from 'multer';
-// import { Filter } from 'bad-words'
-// const filter = new Filter();
+import leoProfanity from 'leo-profanity';
 
-// Type definitions
+// Type definitions (unchanged)
 interface AuthenticatedRequest extends Request {
   user: {
     id: string;
@@ -31,41 +30,26 @@ interface PostBody {
   emoji?: string;
 }
 
-// Initialize bad-words filter
-let filter: any;
+// Initialize leo-profanity with custom bad words
+const badWords: string[] = [
+  'putang', 'tangina', 'gago', 'ulol', 'bobo', 'tanga',
+  'leche', 'pakyu', 'shet', 'buwisit', 'kupal', 'hinayupak',
+  'kingina', 'tarantado', 'peste', 'inutil', 'walang kwenta',
+  'bwakang', 'kantot', 'chupa', 'jakol', 'tamod', 'titi',
+  'puke', 'suso', 'libog',
+  'fuck', 'shit', 'damn', 'bitch', 'asshole', 'bastard',
+  'crap', 'piss', 'cock', 'dick', 'pussy', 'whore', 'slut',
+  'motherfucker', 'cunt', 'fucker', 'jackass', 'retard', 'nigga', 'nigger',
+  'hoe', 'skank', 'faggot', 'twat', 'douche', 'dipshit', 'bullshit', 'hell',
+  'prick', 'bugger', 'suck', 'dumbass', 'fatass', 'shithead', 'goddamn',
+  'mofo', 'jerkoff', 'bastardo', 'mf', 'biatch', 'asswipe', 'cringeass',
+  'licker', 'sucker', 'nutsack', 'nutjob', 'crackhead', 'trashbag', 'smegma',
+  'wanker', 'git', 'bollocks', 'bloody', 'arsehole',
+];
 
-const initializeFilter = async () => {
-  try {
-    const { Filter } = await import('bad-words');
-    filter = new Filter();
+leoProfanity.add(badWords);
 
-    // Add Tagalog curse words and inappropriate terms
-    const badWords: string[] = [
-      'putang', 'tangina', 'gago', 'ulol', 'bobo', 'tanga', 
-      'leche', 'pakyu', 'shet', 'buwisit', 'kupal', 'hinayupak',
-      'kingina', 'tarantado', 'peste', 'inutil', 'walang kwenta', 
-      'bwakang', 'kantot', 'chupa', 'jakol', 'tamod', 'titi', 
-      'puke', 'suso', 'libog',
-      'fuck', 'shit', 'damn', 'bitch', 'asshole', 'bastard',
-      'crap', 'piss', 'cock', 'dick', 'pussy', 'whore', 'slut',
-      'motherfucker', 'cunt', 'fucker', 'jackass', 'retard', 'nigga', 'nigger',
-      'hoe', 'skank', 'faggot', 'twat', 'douche', 'dipshit', 'bullshit', 'hell',
-      'prick', 'bugger', 'suck', 'dumbass', 'fatass', 'shithead', 'goddamn',
-      'mofo', 'jerkoff', 'bastardo', 'mf', 'biatch', 'asswipe', 'cringeass',
-      'licker', 'sucker', 'nutsack', 'nutjob', 'crackhead', 'trashbag', 'smegma',
-      'wanker', 'git', 'bollocks', 'bloody', 'arsehole'
-    ];
-
-    filter.addWords(...badWords);
-  } catch (error) {
-    console.error('Failed to initialize bad-words filter:', error);
-  }
-};
-
-// Initialize filter immediately
-initializeFilter();
-
-// Sexual content detection patterns
+// Sexual content detection patterns (unchanged)
 const sexualContentPatterns: RegExp[] = [
   /\b(sex|porn|xxx|nude|naked|breast|penis|vagina|fuck|orgasm)\b/gi,
   /\b(hookup|horny|sexy|hot\s*girl|hot\s*guy|escort|massage)\b/gi,
@@ -73,16 +57,16 @@ const sexualContentPatterns: RegExp[] = [
   /\b(kantot|chupa|jakol|tamod|titi|puke|suso|libog)\b/gi,
 ];
 
-// Malicious URL patterns
+// Malicious URL patterns (unchanged)
 const maliciousUrlPatterns: RegExp[] = [
   /\b(bit\.ly|tinyurl|shorturl|t\.co|goo\.gl|ow\.ly)\b/gi,
   /\b(download|click|free|win|prize|gift|money|cash)\b/gi,
   /\.(exe|bat|scr|vbs|jar|com|pif|cmd)(\?|$)/gi,
 ];
 
-// Blocked domains list
+// Blocked domains list (unchanged)
 const blockedDomains: string[] = [
-  'malware-site.com', 
+  'malware-site.com',
   'phishing-site.net',
   'spam-domain.org',
   'bit.ly',
@@ -90,9 +74,10 @@ const blockedDomains: string[] = [
   '0x0.st',
   'anonfiles.com',
   'tempmail.org',
-  'guerrillamail.com'
+  'guerrillamail.com',
 ];
 
+// Content validation middleware
 export const validateContent = async (
   req: AuthenticatedRequest,
   res: Response,
@@ -103,14 +88,9 @@ export const validateContent = async (
 
     console.log('Validating content for user:', req.user.id);
 
-    // Ensure filter is initialized
-    if (!filter) {
-      throw new Error('Profanity filter not initialized. Please try again later.');
-    }
-
     // Validate description for profanity and sexual content
     if (description) {
-      if (filter.isProfane(description)) {
+      if (leoProfanity.check(description)) {
         const error: ValidationError = new Error('Content contains inappropriate language. Please modify your description.');
         error.statusCode = 400;
         throw error;
@@ -179,39 +159,39 @@ export const validateContent = async (
   }
 };
 
-// Image content validation
+// Image content validation (unchanged)
 export const validateImages = async (
-  req: AuthenticatedRequest, 
-  res: Response, 
+  req: AuthenticatedRequest,
+  res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
     const files = req.files;
-    
+
     console.log('Validating images for user:', req.user.id);
 
     if (files?.images || files?.custom_pin) {
       const allImages: Express.Multer.File[] = [
         ...(files.images || []),
-        ...(files.custom_pin || [])
+        ...(files.custom_pin || []),
       ];
-      
+
       for (const image of allImages) {
         if (image.size > 5 * 1024 * 1024) {
           const error: ValidationError = new Error('Image file too large. Maximum 5MB allowed.');
           error.statusCode = 400;
           throw error;
         }
-        
+
         if (!image.mimetype.startsWith('image/')) {
           const error: ValidationError = new Error('Invalid file type. Only images are allowed.');
           error.statusCode = 400;
           throw error;
         }
-        
+
         const allowedExtensions: string[] = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
         const fileExtension = image.originalname.toLowerCase().substring(image.originalname.lastIndexOf('.'));
-        
+
         if (!allowedExtensions.includes(fileExtension)) {
           const error: ValidationError = new Error('Invalid image format. Allowed: JPG, PNG, GIF, WebP');
           error.statusCode = 400;
@@ -220,17 +200,17 @@ export const validateImages = async (
 
         const suspiciousPatterns: RegExp[] = [
           /\.(exe|bat|scr|vbs|jar|com|pif|cmd)$/gi,
-          /\.(php|jsp|asp|aspx)$/gi
+          /\.(php|jsp|asp|aspx)$/gi,
         ];
-        
-        if (suspiciousPatterns.some(pattern => pattern.test(image.originalname))) {
+
+        if (suspiciousPatterns.some((pattern) => pattern.test(image.originalname))) {
           const error: ValidationError = new Error('Suspicious file name detected.');
           error.statusCode = 400;
           throw error;
         }
       }
     }
-    
+
     console.log('Image validation passed for user:', req.user.id);
     next();
   } catch (error: any) {
@@ -239,12 +219,12 @@ export const validateImages = async (
   }
 };
 
-// Rate limiting for post submissions
+// Rate limiting for post submissions (unchanged)
 const rateLimitMap = new Map<string, number[]>();
 
 export const rateLimit = (
-  req: Request, 
-  res: Response, 
+  req: Request,
+  res: Response,
   next: NextFunction
 ): void => {
   try {
@@ -252,21 +232,21 @@ export const rateLimit = (
     const now: number = Date.now();
     const windowMs: number = 15 * 60 * 1000; // 15 minutes
     const maxAttempts: number = 5; // 5 posts per 15 minutes
-    
+
     console.log('Checking rate limit for user:', userId);
 
     const userAttempts: number[] = rateLimitMap.get(userId) || [];
-    const recentAttempts: number[] = userAttempts.filter(time => now - time < windowMs);
-    
+    const recentAttempts: number[] = userAttempts.filter((time) => now - time < windowMs);
+
     if (recentAttempts.length >= maxAttempts) {
       console.log('Rate limit exceeded for user:', userId);
       res.status(429).json({ error: 'Too many posts. Please wait before submitting again.' });
       return;
     }
-    
+
     recentAttempts.push(now);
     rateLimitMap.set(userId, recentAttempts);
-    
+
     console.log('Rate limit check passed for user:', userId);
     next();
   } catch (error: any) {
@@ -275,12 +255,12 @@ export const rateLimit = (
   }
 };
 
-// IP-based rate limiting and blacklisting
+// IP-based rate limiting and blacklisting (unchanged)
 const ipRateLimitMap = new Map<string, RateLimitEntry>();
 
 export const advancedRateLimit = (
-  req: Request, 
-  res: Response, 
+  req: Request,
+  res: Response,
   next: NextFunction
 ): void => {
   try {
@@ -288,39 +268,39 @@ export const advancedRateLimit = (
     const now: number = Date.now();
     const windowMs: number = 60 * 1000; // 1 minute
     const maxRequests: number = 10; // 10 requests per minute per IP
-    
+
     console.log('Checking IP rate limit for:', clientIP);
 
-    const entry: RateLimitEntry = ipRateLimitMap.get(clientIP) || { 
-      attempts: [], 
-      blacklisted: false 
+    const entry: RateLimitEntry = ipRateLimitMap.get(clientIP) || {
+      attempts: [],
+      blacklisted: false,
     };
-    
+
     if (entry.blacklisted) {
       console.log('Blacklisted IP detected:', clientIP);
       res.status(403).json({ error: 'Access denied' });
       return;
     }
-    
-    entry.attempts = entry.attempts.filter(time => now - time < windowMs);
-    
+
+    entry.attempts = entry.attempts.filter((time) => now - time < windowMs);
+
     if (entry.attempts.length >= maxRequests) {
       const violationWindow = 5 * 60 * 1000; // 5 minutes
-      const recentViolations = entry.attempts.filter(time => now - time < violationWindow);
-      
+      const recentViolations = entry.attempts.filter((time) => now - time < violationWindow);
+
       if (recentViolations.length > 50) {
         entry.blacklisted = true;
         console.log(`IP ${clientIP} blacklisted for excessive requests`);
       }
-      
+
       console.log('IP rate limit exceeded:', clientIP);
       res.status(429).json({ error: 'Rate limit exceeded. Please slow down.' });
       return;
     }
-    
+
     entry.attempts.push(now);
     ipRateLimitMap.set(clientIP, entry);
-    
+
     console.log('IP rate limit check passed for:', clientIP);
     next();
   } catch (error: any) {
@@ -329,39 +309,39 @@ export const advancedRateLimit = (
   }
 };
 
-// Enhanced file upload configuration
+// Enhanced file upload configuration (unchanged)
 export const enhancedFileUpload = multer({
   limits: {
     fileSize: 5 * 1024 * 1024, // 5MB
-    files: 6 // Max 6 files (5 images + 1 custom pin)
+    files: 6, // Max 6 files (5 images + 1 custom pin)
   },
   fileFilter: (req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback): void => {
     try {
       if (!file.mimetype.startsWith('image/')) {
         throw new Error('Only image files are allowed');
       }
-      
+
       const suspiciousPatterns: RegExp[] = [
         /\.php$/i, /\.jsp$/i, /\.asp$/i, /\.exe$/i,
-        /\.bat$/i, /\.cmd$/i, /\.scr$/i, /\.vbs$/i
+        /\.bat$/i, /\.cmd$/i, /\.scr$/i, /\.vbs$/i,
       ];
-      
-      if (suspiciousPatterns.some(pattern => pattern.test(file.originalname))) {
+
+      if (suspiciousPatterns.some((pattern) => pattern.test(file.originalname))) {
         throw new Error('Suspicious file name detected');
       }
-      
+
       cb(null, true);
     } catch (error: any) {
       console.error('File upload filter error:', error.message);
       cb(error);
     }
-  }
+  },
 });
 
-// Database sanitization function
+// Database sanitization function (unchanged)
 export const sanitizeForDatabase = (input: any): any => {
   if (typeof input !== 'string') return input;
-  
+
   return input
     .replace(/[<>]/g, '')
     .replace(/javascript:/gi, '')
@@ -370,10 +350,10 @@ export const sanitizeForDatabase = (input: any): any => {
     .trim();
 };
 
-// Comprehensive validation middleware
+// Comprehensive validation middleware (unchanged)
 export const comprehensiveValidation = async (
-  req: Request, 
-  res: Response, 
+  req: Request,
+  res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
@@ -384,22 +364,22 @@ export const comprehensiveValidation = async (
     if (req.body.description) req.body.description = sanitizeForDatabase(req.body.description);
     if (req.body.link) req.body.link = sanitizeForDatabase(req.body.link);
     if (req.body.location) req.body.location = sanitizeForDatabase(req.body.location);
-    
+
     // Run validations sequentially
     await new Promise<void>((resolve, reject) => {
-      validateContent((req as any), res, (error?: any) => {
+      validateContent(req as any, res, (error?: any) => {
         if (error) reject(error);
         else resolve();
       });
     });
-    
+
     await new Promise<void>((resolve, reject) => {
-      validateImages((req as any), res, (error?: any) => {
+      validateImages(req as any, res, (error?: any) => {
         if (error) reject(error);
         else resolve();
       });
     });
-    
+
     console.log('Comprehensive validation passed for user:', (req as any).user.id);
     next();
   } catch (error: any) {
@@ -410,9 +390,9 @@ export const comprehensiveValidation = async (
 
 // Export additional utilities
 export {
-  filter,
   validator,
+  badWords,
   sexualContentPatterns,
   maliciousUrlPatterns,
-  blockedDomains
+  blockedDomains,
 };
