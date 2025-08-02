@@ -1,9 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { supabase } from '../utils/supabase';
+import { supabase } from '../../utils/supabase';
 import multer from 'multer';
 import bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
-import { authenticate } from '../middleware/auth';
+import { authenticate } from '../../middleware/auth';
 
 const router = Router();
 const SALT_ROUNDS = 10;
@@ -87,8 +87,8 @@ router.post('/register', async (req: Request, res: Response) => {
     }
 
     // Hash the password
-    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-    console.log('Password hashed successfully for email:', email);
+    // const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+    // console.log('Password hashed successfully for email:', email);
 
     // Create user with Supabase Auth
     const { data, error } = await supabase.auth.signUp({
@@ -421,7 +421,7 @@ router.post('/profile/picture', authenticate, upload.single('profile_picture'), 
 });
 
 // Get user profile (optional endpoint for debugging)
-router.get('/profile', authenticate, async (req: Request, res: Response) => {
+router.get('/profile', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
     
