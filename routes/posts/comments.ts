@@ -5,11 +5,50 @@ import {
   sanitizeForDatabase
 } from '../../middleware/advancedPostValidation';
 import { authenticate } from '../../middleware/auth';
-import { invalidateNotificationCache, autoInvalidateCache } from '../../utils/cache'
+import { invalidateNotificationCache, autoInvalidateCache } from '../../utils/cache';
 
 const router = Router();
 
-router.get('/:newId/comments/count', autoInvalidateCache(req => req.user?.id || 'anonymous'), async (req: Request, res: Response) => {
+// Utility function to get user info consistently
+const getUserInfo = async (userId: string) => {
+  try {
+    const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(userId);
+    
+    if (!userError && user) {
+      return {
+        id: user.id,
+        email: user.email || 'unknown@example.com',
+        full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Anonymous',
+        profile_picture: user.user_metadata?.profile_picture || null,
+      };
+    }
+  } catch (authError) {
+    console.warn('Failed to get user info for:', userId, authError);
+  }
+  
+  return {
+    id: userId,
+    email: 'unknown@example.com',
+    full_name: 'Anonymous User',
+    profile_picture: null,
+  };
+};
+
+// Batch get user info for multiple users
+const getUsersInfo = async (userIds: string[]) => {
+  const usersMap: Record<string, any> = {};
+  
+  const userPromises = userIds.map(async (userId) => {
+    const userInfo = await getUserInfo(userId);
+    usersMap[userId] = userInfo;
+  });
+  
+  await Promise.all(userPromises);
+  return usersMap;
+};
+
+// Get comments count for a post
+router.get('/:newId/comments/count', async (req: Request, res: Response) => {
   try {
     const { newId } = req.params;
 
@@ -50,7 +89,7 @@ router.get('/:newId/comments/count', autoInvalidateCache(req => req.user?.id || 
 });
 
 // Get comments for a post
-router.get('/:newId/comments', autoInvalidateCache(req => req.user?.id || 'anonymous'), async (req: Request, res: Response) => {
+router.get('/:newId/comments', async (req: Request, res: Response) => {
   try {
     const { newId } = req.params;
     const page = parseInt(req.query.page as string) || 1;
@@ -89,50 +128,28 @@ router.get('/:newId/comments', autoInvalidateCache(req => req.user?.id || 'anony
 
     // Fetch all replies for the top-level comments
     const topLevelCommentIds = topLevelComments.map((c) => c.id);
-    const { data: replies, error: repliesError } = await supabase
-      .from('comments')
-      .select('id, post_id, user_id, parent_id, depth, content, created_at, updated_at, is_deleted')
-      .eq('post_id', postId)
-      .eq('is_deleted', false)
-      .in('parent_id', topLevelCommentIds)
-      .order('created_at', { ascending: true });
+    let replies: any[] = [];
+    
+    if (topLevelCommentIds.length > 0) {
+      const { data: repliesData, error: repliesError } = await supabase
+        .from('comments')
+        .select('id, post_id, user_id, parent_id, depth, content, created_at, updated_at, is_deleted')
+        .eq('post_id', postId)
+        .eq('is_deleted', false)
+        .in('parent_id', topLevelCommentIds)
+        .order('created_at', { ascending: true });
 
-    if (repliesError) {
-      console.error('Replies fetch error:', repliesError);
-      return res.status(500).json({ error: 'Failed to fetch replies' });
-    }
-
-    // Fetch user info for all unique user_ids
-    const userIds = [...new Set([...topLevelComments, ...replies].map((c) => c.user_id))];
-    const users: { [key: string]: { id: string; email: string; full_name: string; profile_picture: string | null } } = {};
-    for (const userId of userIds) {
-      try {
-        const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(userId);
-        if (!userError && user) {
-          users[userId] = {
-            id: user.id,
-            email: user.email ?? 'unknown@example.com',
-            full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Anonymous',
-            profile_picture: user.user_metadata?.profile_picture || null,
-          };
-        } else {
-          users[userId] = {
-            id: userId,
-            email: 'unknown@example.com',
-            full_name: 'Anonymous User',
-            profile_picture: null,
-          };
-        }
-      } catch (authError) {
-        console.warn('Failed to get user info:', authError);
-        users[userId] = {
-          id: userId,
-          email: 'unknown@example.com',
-          full_name: 'Anonymous User',
-          profile_picture: null,
-        };
+      if (repliesError) {
+        console.error('Replies fetch error:', repliesError);
+        return res.status(500).json({ error: 'Failed to fetch replies' });
       }
+      
+      replies = repliesData || [];
     }
+
+    // Get user info for all unique user_ids
+    const userIds = [...new Set([...topLevelComments, ...replies].map((c) => c.user_id))];
+    const users = await getUsersInfo(userIds);
 
     // Build threaded structure
     const threadedComments = topLevelComments.map((comment) => ({
@@ -282,6 +299,9 @@ router.post('/:newId/comments', authenticate, comprehensiveValidation, autoInval
 
         if (postNotificationError) {
           console.warn('Failed to create comment notification:', postNotificationError);
+        } else {
+          // Invalidate notification cache for post owner
+          invalidateNotificationCache(post.user_id);
         }
       }
 
@@ -301,40 +321,19 @@ router.post('/:newId/comments', authenticate, comprehensiveValidation, autoInval
 
         if (replyNotificationError) {
           console.warn('Failed to create reply notification:', replyNotificationError);
+        } else {
+          // Invalidate notification cache for parent comment owner
+          invalidateNotificationCache(parentUserId);
         }
       }
     }
 
     // Get user information for the response
-    let commentWithUser = comment;
-    try {
-      const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(userId);
-      if (!userError && user) {
-        commentWithUser = {
-          ...comment,
-          user: {
-            id: user.id,
-            email: user.email,
-            full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Anonymous',
-            profile_picture: user.user_metadata?.profile_picture || null,
-          },
-        };
-      }
-    } catch (authError) {
-      console.warn('Failed to get user info for new comment:', authError);
-      commentWithUser = {
-        ...comment,
-        user: {
-          id: userId,
-          email: 'unknown@example.com',
-          full_name: 'Anonymous User',
-          profile_picture: null,
-        },
-      };
-    }
-
-    // 🚨 INVALIDATE CACHE for the post owner
-    invalidateNotificationCache(post.user_id);
+    const userInfo = await getUserInfo(userId);
+    const commentWithUser = {
+      ...comment,
+      user: userInfo,
+    };
 
     console.log('Comment created successfully:', comment.id);
     res.status(201).json(commentWithUser);
@@ -483,7 +482,7 @@ router.delete('/:newId/comments/:commentId', authenticate, async (req: Request, 
       return res.status(500).json({ error: 'Failed to delete comment' });
     }
 
-    // Optionally, soft delete replies (if not handled by ON DELETE CASCADE)
+    // Soft delete replies (if not handled by ON DELETE CASCADE)
     const { error: repliesDeleteError } = await supabase
       .from('comments')
       .update({
@@ -502,46 +501,6 @@ router.delete('/:newId/comments/:commentId', authenticate, async (req: Request, 
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({ error: 'Failed to delete comment' });
-  }
-});
-
-// Get comments count for a post
-router.get('/:newId/comments/count', async (req: Request, res: Response) => {
-  try {
-    const newId = req.params.newId;
-
-    console.log('Getting comments count for post new_id:', newId);
-
-    // Get the post's integer ID
-    const { data: post, error: postError } = await supabase
-      .from('posts')
-      .select('id')
-      .eq('new_id', newId)
-      .single();
-
-    if (postError || !post) {
-      console.log('Post not found with new_id:', newId);
-      return res.status(404).json({ error: 'Post not found' });
-    }
-
-    const postId = post.id;
-
-    const { count, error } = await supabase
-      .from('comments')
-      .select('*', { count: 'exact', head: true })
-      .eq('post_id', postId)
-      .eq('is_deleted', false);
-
-    if (error) {
-      console.error('Comments count error:', error);
-      return res.status(500).json({ error: 'Failed to get comments count' });
-    }
-
-    console.log('Comments count:', count);
-    res.json({ count: count || 0 });
-  } catch (error) {
-    console.error('Server error:', error);
-    res.status(500).json({ error: 'Failed to get comments count' });
   }
 });
 

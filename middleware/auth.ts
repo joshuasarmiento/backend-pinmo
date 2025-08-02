@@ -1,3 +1,4 @@
+// middleware/auth.ts
 import { Request, Response, NextFunction } from 'express';
 import { supabase } from '../utils/supabase';
 
@@ -5,26 +6,32 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
   try {
     const authHeader = req.headers.authorization;
     
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.log('Missing or invalid authorization header');
-      return res.status(401).json({ error: 'Auth session missing!' });
+    if (!authHeader) {
+      console.log('No authorization header found');
+      return res.status(401).json({ error: 'No authorization header' });
     }
 
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+    if (!authHeader.startsWith('Bearer ')) {
+      console.log('Invalid authorization header format:', authHeader);
+      return res.status(401).json({ error: 'Invalid authorization header format' });
+    }
+
+    const token = authHeader.substring(7);
     
-    if (!token) {
-      console.log('Empty token provided');
-      return res.status(401).json({ error: 'Auth session missing!' });
+    if (!token || token.trim() === '' || token === 'null' || token === 'undefined') {
+      console.log('Invalid token:', token);
+      return res.status(401).json({ error: 'Invalid token' });
     }
 
     console.log('Verifying token...');
-    
-    // Verify token with Supabase
+    console.log('Token length:', token.length);
+    console.log('Token preview:', token.substring(0, 20) + '...');
+
     const { data: { user }, error } = await supabase.auth.getUser(token);
-    
+
     if (error) {
       console.log('Token verification error:', error.message);
-      return res.status(401).json({ error: 'Invalid or expired token' });
+      return res.status(401).json({ error: 'Invalid token' });
     }
 
     if (!user) {
@@ -32,13 +39,11 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       return res.status(401).json({ error: 'User not found' });
     }
 
-    console.log('User authenticated successfully:', user.id);
-    
-    // Attach user to request object
+    console.log('Token verified successfully for user:', user.id);
     (req as any).user = user;
     next();
   } catch (error) {
     console.error('Authentication middleware error:', error);
-    res.status(401).json({ error: 'Authentication failed' });
+    return res.status(500).json({ error: 'Authentication failed' });
   }
 };

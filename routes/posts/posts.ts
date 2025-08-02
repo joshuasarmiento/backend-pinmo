@@ -10,15 +10,258 @@ import {
 } from '../../middleware/advancedPostValidation';
 import { authenticate } from '../../middleware/auth';
 import { uploadImageToSupabase } from '../../utils/uploadImageToSupabase';
-import NodeCache from 'node-cache';
-import {  autoInvalidateCache, invalidatePostsCache, invalidateUserPostsCache, invalidateSinglePostCache } from '../../utils/cache'
+import { 
+  cache,
+  safeGetCache,
+  safeSetCache,
+  autoInvalidateCache, 
+  invalidatePostsCache, 
+  invalidateUserPostsCache, 
+  invalidateSinglePostCache 
+} from '../../utils/cache';
 
 const router = Router();
 
-// Create cache instance (TTL in seconds)
-const cache = new NodeCache({ 
-  stdTTL: 60, // 1 minute default TTL
-  checkperiod: 120 // Check for expired keys every 2 minutes
+// Utility function to get user info consistently
+const getUserInfo = async (userId: string) => {
+  try {
+    const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(userId);
+    
+    if (!userError && user) {
+      return {
+        id: user.id,
+        email: user.email || 'unknown@example.com',
+        full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Anonymous',
+        profile_picture: user.user_metadata?.profile_picture || null,
+        email_verified: user.email_confirmed_at ? true : false
+      };
+    }
+  } catch (authError) {
+    console.warn('Failed to get user info for:', userId, authError);
+  }
+  
+  return {
+    id: userId,
+    email: 'unknown@example.com',
+    full_name: 'Anonymous User',
+    profile_picture: null,
+    email_verified: false
+  };
+};
+
+// Batch get user info for multiple users
+const getUsersInfo = async (userIds: string[]) => {
+  const usersMap: Record<string, any> = {};
+  
+  const userPromises = userIds.map(async (userId) => {
+    const userInfo = await getUserInfo(userId);
+    usersMap[userId] = userInfo;
+  });
+  
+  await Promise.all(userPromises);
+  return usersMap;
+};
+
+// Get notifications for a user
+router.get('/notifications', authenticate, async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user.id;
+    const { page = '1', limit = '10' } = req.query;
+
+    console.log('Fetching notifications for user:', userId);
+
+    const pageNum = parseInt(page as string);
+    const limitNum = parseInt(limit as string);
+    const offset = (pageNum - 1) * limitNum;
+
+    // Create cache key
+    const cacheKey = `notifications:${userId}:page-${page}:limit-${limit}`;
+
+    // Try to get from cache first
+    const cached = safeGetCache(cacheKey);
+    if (cached) {
+      console.log('Returning cached notifications for user:', userId);
+      return res.json(cached);
+    }
+
+    const { data: notifications, error } = await supabase
+      .from('notifications')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limitNum - 1);
+
+    if (error) {
+      console.error('Database error:', error);
+      return res.status(500).json({ error: 'Failed to fetch notifications' });
+    }
+
+    // Get unique source_user_ids
+    const sourceUserIds = [...new Set(notifications.map(n => n.source_user_id).filter(Boolean))];
+
+    // Fetch user data separately if we have source user IDs
+    let usersMap: Record<string, any> = {};
+    if (sourceUserIds.length > 0) {
+      const { data: users, error: usersError } = await supabase
+        .from('users')
+        .select('id, full_name, email, profile_picture')
+        .in('id', sourceUserIds);
+
+      if (usersError) {
+        console.error('Users fetch error:', usersError);
+      } else {
+        // Create a map for quick lookup
+        usersMap = (users || []).reduce((map: Record<string, any>, user: any) => {
+          map[user.id] = user;
+          return map;
+        }, {});
+      }
+    }
+
+    // Map users to notifications
+    const notificationsWithUsers = notifications.map((notification: any) => ({
+      ...notification,
+      source_user: usersMap[notification.source_user_id] || {
+        id: notification.source_user_id,
+        full_name: 'Anonymous',
+        email: 'unknown@example.com',
+        profile_picture: null,
+      },
+    }));
+
+    const { count, error: countError } = await supabase
+      .from('notifications')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId);
+
+    if (countError) {
+      console.error('Count error:', countError);
+      return res.status(500).json({ error: 'Failed to get notifications count' });
+    }
+
+    console.log('Notifications fetched:', notificationsWithUsers.length);
+
+    const result = {
+      notifications: notificationsWithUsers,
+      hasMore: notificationsWithUsers.length === limitNum,
+      total: count || 0,
+    };
+
+    // Cache the result for 1 minute
+    safeSetCache(cacheKey, result, 60);
+    console.log('Cached notifications for user:', userId);
+
+    res.json(result);
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+});
+
+// Get unread notifications count
+router.get('/notifications/unread-count', authenticate, async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user.id;
+
+    console.log('Getting unread notifications count for user:', userId);
+
+    const cacheKey = `notifications:${userId}:unread-count`;
+    const cached = safeGetCache(cacheKey);
+    if (cached !== null && cached !== undefined) {
+      console.log('Returning cached unread count for user:', userId);
+      return res.json({ count: cached });
+    }
+
+    const { count, error } = await supabase
+      .from('notifications')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('is_read', false);
+
+    if (error) {
+      console.error('Count error:', error);
+      return res.status(500).json({ error: 'Failed to get unread notifications count' });
+    }
+
+    const unreadCount = count || 0;
+
+    // Cache the result for 30 seconds (shorter TTL for real-time feel)
+    safeSetCache(cacheKey, unreadCount, 30);
+    console.log('Unread notifications count for user:', userId, '=', unreadCount);
+
+    res.json({ count: unreadCount });
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({ error: 'Failed to get unread notifications count' });
+  }
+});
+
+// Mark notification as read
+router.put('/notifications/:id/read', authenticate, autoInvalidateCache(req => `notifications:${req.user.id}`), async (req: Request, res: Response) => {
+  try {
+    const notificationId = req.params.id;
+    const userId = (req as any).user.id;
+
+    console.log('Marking notification as read:', notificationId);
+
+    const { data: notification, error: fetchError } = await supabase
+      .from('notifications')
+      .select('user_id')
+      .eq('id', notificationId)
+      .single();
+
+    if (fetchError || !notification) {
+      console.log('Notification not found:', notificationId);
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    if (notification.user_id !== userId) {
+      console.log('Unauthorized attempt by user:', userId);
+      return res.status(403).json({ error: 'Unauthorized to modify this notification' });
+    }
+
+    const { error: updateError } = await supabase
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('id', notificationId);
+
+    if (updateError) {
+      console.error('Update error:', updateError);
+      return res.status(500).json({ error: 'Failed to mark notification as read' });
+    }
+
+    console.log('Notification marked as read:', notificationId);
+    res.json({ message: 'Notification marked as read' });
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({ error: 'Failed to mark notification as read' });
+  }
+});
+
+// Mark all notifications as read
+router.put('/notifications/read-all', authenticate, autoInvalidateCache(req => `notifications:${req.user.id}`), async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user.id;
+
+    console.log('Marking all notifications as read for user:', userId);
+
+    const { error } = await supabase
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('user_id', userId)
+      .eq('is_read', false);
+
+    if (error) {
+      console.error('Update error:', error);
+      return res.status(500).json({ error: 'Failed to mark all notifications as read' });
+    }
+
+    console.log('All notifications marked as read for user:', userId);
+    res.json({ message: 'All notifications marked as read' });
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({ error: 'Failed to mark all notifications as read' });
+  }
 });
 
 // Create post
@@ -96,15 +339,15 @@ router.post(
     const { data, error } = await supabase
       .from('posts')
       .insert({
-        type,
-        description,
+        type: sanitizedType,
+        description: sanitizedDescription,
         lat: parseFloat(lat),
         lng: parseFloat(lng),
-        location,
+        location: sanitizedLocation,
         image_url: imageUrls.length > 0 ? imageUrls : null,
         custom_pin: customPinUrl,
-        link: link || null,
-        emoji: emoji || null,
+        link: sanitizedLink,
+        emoji: sanitizedEmoji,
         timestamp: new Date().toISOString(),
         resolution_status: 'active',
         likes: 0,
@@ -119,10 +362,7 @@ router.post(
       return res.status(500).json({ error: 'Failed to create post' });
     }
 
-    // After successful post creation, add:
-    invalidatePostsCache();
-    invalidateUserPostsCache(userId);
-
+    // Cache invalidation is handled by autoInvalidateCache middleware
     console.log('Post created successfully:', data.id);
     res.status(201).json(data);
   } catch (error) {
@@ -147,10 +387,12 @@ router.get('/', async (req: Request, res: Response) => {
 
     console.log('Fetching posts with filters:', { dateFilter, sortKey, sortOrder, userId, page, limit, exclude });
 
-    // Generate cache key
-    const cacheKey = `posts:${dateFilter || 'all'}:${sortKey}:${sortOrder}:${userId || 'all'}:page${page}:limit${limit}:exclude${exclude || 'none'}`;
-    const cached = cache.get(cacheKey);
+    // Generate consistent cache key
+    const cacheKey = `posts:filter-${dateFilter || 'all'}:sort-${sortKey}:${sortOrder}:user-${userId || 'all'}:page-${page}:limit-${limit}:exclude-${exclude || 'none'}`;
+    
+    const cached = safeGetCache(cacheKey);
     if (cached) {
+      console.log('Returning cached posts for key:', cacheKey);
       return res.json(cached);
     }
 
@@ -236,45 +478,11 @@ router.get('/', async (req: Request, res: Response) => {
       // Check if we have valid user data with full_name
       if (!userData || !userData.full_name) {
         if (post.user_id) {
-          try {
-            const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(post.user_id);
-            
-            if (!userError && user) {
-              postWithUser = {
-                ...post,
-                user: {
-                  id: user.id,
-                  email: user.email,
-                  full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Anonymous',
-                  profile_picture: user.user_metadata?.profile_picture || null,
-                  email_verified: user.email_confirmed_at ? true : false
-                }
-              };
-            } else {
-              postWithUser = {
-                ...post,
-                user: {
-                  id: post.user_id,
-                  email: 'unknown@example.com',
-                  full_name: 'Anonymous User',
-                  profile_picture: null,
-                  email_verified: false
-                }
-              };
-            }
-          } catch (authError) {
-            console.warn('Failed to get user info for post:', post.user_id, authError);
-            postWithUser = {
-              ...post,
-              user: {
-                id: post.user_id,
-                email: 'unknown@example.com',
-                full_name: 'Anonymous User',
-                profile_picture: null,
-                email_verified: false
-              }
-            };
-          }
+          const userInfo = await getUserInfo(post.user_id);
+          postWithUser = {
+            ...post,
+            user: userInfo
+          };
         }
       } else {
         // Use the valid joined user data
@@ -320,7 +528,7 @@ router.get('/', async (req: Request, res: Response) => {
     }));
 
     // Cache the results (1-minute TTL)
-    cache.set(cacheKey, postsWithUserAndLikes, 60);
+    safeSetCache(cacheKey, postsWithUserAndLikes, 60);
     console.log('Posts fetched successfully:', postsWithUserAndLikes.length, 'posts');
 
     res.json(postsWithUserAndLikes);
@@ -338,9 +546,9 @@ router.get('/:newId', async (req: Request, res: Response) => {
     console.log('Fetching post by new_id:', newId);
 
     const cacheKey = `post:${newId}`;
-    const cached = cache.get(cacheKey);
+    const cached = safeGetCache(cacheKey);
     if (cached) {
-      console.log('Returning cached post');
+      console.log('Returning cached post for:', newId);
       return res.json(cached);
     }
 
@@ -358,37 +566,14 @@ router.get('/:newId', async (req: Request, res: Response) => {
     // Get user information for the post
     let postWithUser = post;
     if (post.user_id) {
-      try {
-        const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(post.user_id);
-        
-        if (!userError && user) {
-          postWithUser = {
-            ...post,
-            user: {
-              id: user.id,
-              email: user.email,
-              full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Anonymous',
-              profile_picture: user.user_metadata?.profile_picture || null,
-              email_verified: user.email_confirmed_at ? true : false
-            }
-          };
-        }
-      } catch (authError) {
-        console.warn('Failed to get user info for post:', post.user_id, authError);
-        postWithUser = {
-          ...post,
-          user: {
-            id: post.user_id,
-            email: 'unknown@example.com',
-            full_name: 'Anonymous User',
-            profile_picture: null,
-            email_verified: false
-          }
-        };
-      }
+      const userInfo = await getUserInfo(post.user_id);
+      postWithUser = {
+        ...post,
+        user: userInfo
+      };
     }
 
-    cache.set(cacheKey, postWithUser, 300); // Cache for 5 minutes
+    safeSetCache(cacheKey, postWithUser, 300); // Cache for 5 minutes
 
     console.log('Post fetched successfully by new_id:', newId);
     res.json(postWithUser);
@@ -415,7 +600,7 @@ router.put('/:id', authenticate, autoInvalidateCache(req => 'posts'), async (req
     // Verify post belongs to user
     const { data: post, error: fetchError } = await supabase
       .from('posts')
-      .select('user_id')
+      .select('user_id, new_id')
       .eq('id', postId)
       .single();
 
@@ -429,11 +614,14 @@ router.put('/:id', authenticate, autoInvalidateCache(req => 'posts'), async (req
       return res.status(403).json({ error: 'Unauthorized to edit this post' });
     }
 
+    const sanitizedType = sanitizeForDatabase(type);
+    const sanitizedDescription = sanitizeForDatabase(description);
+
     const { error: updateError } = await supabase
       .from('posts')
       .update({
-        type,
-        description,
+        type: sanitizedType,
+        description: sanitizedDescription,
         updated_at: new Date().toISOString()
       })
       .eq('id', postId);
@@ -443,10 +631,11 @@ router.put('/:id', authenticate, autoInvalidateCache(req => 'posts'), async (req
       return res.status(500).json({ error: 'Failed to update post' });
     }
 
-    // After successful update, add:
-    invalidatePostsCache();
+    // Invalidate specific caches
     invalidateUserPostsCache(userId);
-    invalidateSinglePostCache(post.user_id); // if you have new_id
+    if (post.new_id) {
+      invalidateSinglePostCache(post.new_id);
+    }
 
     console.log('Post updated successfully:', postId);
     res.json({ message: 'Post updated successfully' });
@@ -467,7 +656,7 @@ router.delete('/:id', authenticate, autoInvalidateCache(req => 'posts'), async (
     // Verify post belongs to user and get image URLs for cleanup
     const { data: post, error: fetchError } = await supabase
       .from('posts')
-      .select('user_id, image_url, custom_pin')
+      .select('user_id, image_url, custom_pin, new_id')
       .eq('id', postId)
       .single();
 
@@ -492,7 +681,7 @@ router.delete('/:id', authenticate, autoInvalidateCache(req => 'posts'), async (
       return res.status(500).json({ error: 'Failed to delete post' });
     }
 
-    // Optional: Clean up uploaded images from storage
+    // Clean up uploaded images from storage
     if (post.image_url && Array.isArray(post.image_url)) {
       try {
         const deletePromises = post.image_url.map(async (url: string) => {
@@ -531,10 +720,11 @@ router.delete('/:id', authenticate, autoInvalidateCache(req => 'posts'), async (
       }
     }
 
-    // After successful deletion, add:
-    invalidatePostsCache();
+    // Invalidate specific caches
     invalidateUserPostsCache(userId);
-    invalidateSinglePostCache(post.user_id); // if you have new_id
+    if (post.new_id) {
+      invalidateSinglePostCache(post.new_id);
+    }
 
     console.log('Post deleted successfully:', postId);
     res.json({ message: 'Post deleted successfully' });
@@ -543,10 +733,5 @@ router.delete('/:id', authenticate, autoInvalidateCache(req => 'posts'), async (
     res.status(500).json({ error: 'Failed to delete post' });
   }
 });
-
-
-
-
-
 
 export default router;

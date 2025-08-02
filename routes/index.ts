@@ -6,7 +6,6 @@ import viewsRoutes from './posts/views';
 import likesRoutes from './posts/likes';
 import adminRoutes from './admins';
 import commentRoutes from './posts/comments';
-import notificationRoute from './posts/notifications';
 
 const router = Router();
 
@@ -14,7 +13,6 @@ const router = Router();
 router.use('/users', userRoutes);
 router.use('/posts', postRoutes);
 router.use('/posts', commentRoutes);
-router.use('/posts', notificationRoute);
 router.use('/posts', feedbackRoutes);
 router.use('/posts', viewsRoutes);
 router.use('/posts', likesRoutes);

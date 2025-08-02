@@ -421,7 +421,7 @@ router.post('/profile/picture', authenticate, upload.single('profile_picture'), 
 });
 
 // Get user profile (optional endpoint for debugging)
-router.get('/profile', async (req: Request, res: Response) => {
+router.get('/profile', authenticate, async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
     

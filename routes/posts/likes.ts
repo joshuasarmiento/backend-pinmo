@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { supabase } from '../../utils/supabase';
 import { authenticate } from '../../middleware/auth';
-import { invalidateNotificationCache, autoInvalidateCache, invalidatePostsCache } from '../../utils/cache'
+import { invalidateNotificationCache, autoInvalidateCache, invalidatePostsCache } from '../../utils/cache';
 
 const router = Router();
 
@@ -48,7 +48,7 @@ router.post('/:id/likes', authenticate, autoInvalidateCache(req => req.user.id),
       return res.status(500).json({ error: 'Failed to add like' });
     }
 
-    // Get current likes count
+    // Get current likes count and post info
     const { data: post, error: fetchError } = await supabase
       .from('posts')
       .select('likes, user_id, new_id')
@@ -73,7 +73,7 @@ router.post('/:id/likes', authenticate, autoInvalidateCache(req => req.user.id),
       return res.status(500).json({ error: 'Failed to increment likes' });
     }
 
-    // Trigger Notification
+    // Create notification if not liking own post
     if (post.user_id !== userId) {
       const { data: sourceUser, error: userError } = await supabase
         .from('users')
@@ -96,13 +96,15 @@ router.post('/:id/likes', authenticate, autoInvalidateCache(req => req.user.id),
 
         if (notificationError) {
           console.warn('Failed to create like notification:', notificationError);
+        } else {
+          // Invalidate notification cache for post owner
+          invalidateNotificationCache(post.user_id);
         }
       }
     }
 
-    // 🚨 INVALIDATE CACHE for the post owner
-    invalidatePostsCache(); // Since likes count affects sorting
-    invalidateNotificationCache(post.user_id);
+    // Invalidate posts cache since likes count affects sorting
+    invalidatePostsCache();
 
     console.log('Like added successfully. New count:', newLikesCount);
     res.status(201).json({ likes: newLikesCount });
@@ -170,6 +172,9 @@ router.delete('/:id/likes', authenticate, autoInvalidateCache(req => req.user.id
       return res.status(500).json({ error: 'Failed to decrement likes' });
     }
 
+    // Invalidate posts cache since likes count affects sorting
+    invalidatePostsCache();
+
     console.log('Like removed successfully. New count:', newLikesCount);
     res.json({ likes: newLikesCount });
   } catch (error) {
@@ -183,6 +188,8 @@ router.get('/:id/likes/status', authenticate, async (req: Request, res: Response
   try {
     const postId = req.params.id;
     const userId = (req as any).user.id;
+
+    console.log('Getting like status for post:', postId, 'user:', userId);
 
     const { data: existingLike } = await supabase
       .from('post_likes')
