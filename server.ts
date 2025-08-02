@@ -8,11 +8,21 @@ dotenv.config();
 
 // Initialize Express app
 const app = express();
-app.use(cors());
+
+// Determine CORS origin based on environment
+const corsOrigin = process.env.NODE_ENV === 'production' 
+  ? 'https://pin-oy.vercel.app' 
+  : 'http://localhost:5173';
+
+// Configure CORS
+app.use(cors({
+  origin: corsOrigin,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 app.use(express.json());
 
 // Mount routes
-// Use the main router
 app.use('/api/v1', routes);
 
 // Health check
