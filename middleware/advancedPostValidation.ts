@@ -1,8 +1,15 @@
 import { Request, Response, NextFunction } from 'express';
 import * as validator from 'validator';
 import multer from 'multer';
-import { Filter } from 'bad-words'
-const filter = new Filter();
+// import { Filter } from 'bad-words'
+// const filter = new Filter();
+
+let filter: any;
+
+(async () => {
+  const { Filter } = await import('bad-words');
+  filter = new Filter();
+})();
 
 // Type definitions
 interface AuthenticatedRequest extends Request {
@@ -391,7 +398,7 @@ export const comprehensiveValidation = async (
 
 // Export additional utilities
 export {
-  Filter,
+  filter,
   validator,
   badWords,
   sexualContentPatterns,
