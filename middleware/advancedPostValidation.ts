@@ -4,13 +4,6 @@ import multer from 'multer';
 // import { Filter } from 'bad-words'
 // const filter = new Filter();
 
-let filter: any;
-
-(async () => {
-  const { Filter } = await import('bad-words');
-  filter = new Filter();
-})();
-
 // Type definitions
 interface AuthenticatedRequest extends Request {
   user: {
@@ -38,24 +31,31 @@ interface PostBody {
   emoji?: string;
 }
 
-// Add Tagalog curse words and inappropriate terms
-const badWords: string[] = [
-  'putang', 'tangina', 'gago', 'ulol', 'bobo', 'tanga', 
-  'leche', 'pakyu', 'shet', 'buwisit', 'kupal', 'hinayupak',
-  'kingina', 'tarantado', 'peste', 'inutil', 'walang kwenta', 
-  'bwakang', 'kantot', 'chupa', 'jakol', 'tamod', 'titi', 
-  'puke', 'suso', 'libog',
-  'fuck', 'shit', 'damn', 'bitch', 'asshole', 'bastard',
-  'crap', 'piss', 'cock', 'dick', 'pussy', 'whore', 'slut',
-  'motherfucker', 'cunt', 'fucker', 'jackass', 'retard', 'nigga', 'nigger',
-  'hoe', 'skank', 'faggot', 'twat', 'douche', 'dipshit', 'bullshit', 'hell',
-  'prick', 'bugger', 'suck', 'dumbass', 'fatass', 'shithead', 'goddamn',
-  'mofo', 'jerkoff', 'bastardo', 'mf', 'biatch', 'asswipe', 'cringeass',
-  'licker', 'sucker', 'nutsack', 'nutjob', 'crackhead', 'trashbag', 'smegma',
-  'wanker', 'git', 'bollocks', 'bloody', 'arsehole'
-];
+let filter: any;
 
-filter.addWords(...badWords);
+(async () => {
+  const { Filter } = await import('bad-words');
+  filter = new Filter();
+
+  // Add Tagalog curse words and inappropriate terms
+  const badWords: string[] = [
+    'putang', 'tangina', 'gago', 'ulol', 'bobo', 'tanga', 
+    'leche', 'pakyu', 'shet', 'buwisit', 'kupal', 'hinayupak',
+    'kingina', 'tarantado', 'peste', 'inutil', 'walang kwenta', 
+    'bwakang', 'kantot', 'chupa', 'jakol', 'tamod', 'titi', 
+    'puke', 'suso', 'libog',
+    'fuck', 'shit', 'damn', 'bitch', 'asshole', 'bastard',
+    'crap', 'piss', 'cock', 'dick', 'pussy', 'whore', 'slut',
+    'motherfucker', 'cunt', 'fucker', 'jackass', 'retard', 'nigga', 'nigger',
+    'hoe', 'skank', 'faggot', 'twat', 'douche', 'dipshit', 'bullshit', 'hell',
+    'prick', 'bugger', 'suck', 'dumbass', 'fatass', 'shithead', 'goddamn',
+    'mofo', 'jerkoff', 'bastardo', 'mf', 'biatch', 'asswipe', 'cringeass',
+    'licker', 'sucker', 'nutsack', 'nutjob', 'crackhead', 'trashbag', 'smegma',
+    'wanker', 'git', 'bollocks', 'bloody', 'arsehole'
+  ];
+
+  filter.addWords(...badWords);
+})();
 
 // Sexual content detection patterns
 const sexualContentPatterns: RegExp[] = [
@@ -95,6 +95,11 @@ export const validateContent = async (
     const { description, link }: PostBody = req.body;
     
     console.log('Validating content for user:', req.user.id);
+
+    // Ensure filter is initialized
+    if (!filter) {
+      throw new Error('Filter not initialized');
+    }
 
     // Validate description for profanity and sexual content
     if (description) {
@@ -400,7 +405,6 @@ export const comprehensiveValidation = async (
 export {
   filter,
   validator,
-  badWords,
   sexualContentPatterns,
   maliciousUrlPatterns,
   blockedDomains
