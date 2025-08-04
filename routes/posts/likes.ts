@@ -183,6 +183,39 @@ router.delete('/:id/likes', authenticate, autoInvalidateCache(req => req.user.id
   }
 });
 
+// Get likes count for a post (similar to views endpoint)
+router.get('/:id/likes', async (req: Request, res: Response) => {
+  try {
+    const postId = req.params.id;
+
+    console.log('Getting likes count for post:', postId);
+
+    const { data: post, error: fetchError } = await supabase
+      .from('posts')
+      .select('likes')
+      .eq('id', postId)
+      .single();
+
+    if (fetchError) {
+      console.error('Fetch error:', fetchError);
+      return res.status(500).json({ error: 'Failed to fetch post likes' });
+    }
+
+    if (!post) {
+      console.log('Post not found:', postId);
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    const likesCount = post.likes || 0;
+
+    console.log('Likes count for post:', postId, '=', likesCount);
+    res.json({ likes: likesCount });
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({ error: 'Failed to get likes count' });
+  }
+});
+
 // Get post likes status for user (helpful for UI)
 router.get('/:id/likes/status', authenticate, async (req: Request, res: Response) => {
   try {

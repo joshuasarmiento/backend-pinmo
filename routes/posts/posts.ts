@@ -50,17 +50,17 @@ const getUserInfo = async (userId: string) => {
 };
 
 // Batch get user info for multiple users
-const getUsersInfo = async (userIds: string[]) => {
-  const usersMap: Record<string, any> = {};
+// const getUsersInfo = async (userIds: string[]) => {
+//   const usersMap: Record<string, any> = {};
   
-  const userPromises = userIds.map(async (userId) => {
-    const userInfo = await getUserInfo(userId);
-    usersMap[userId] = userInfo;
-  });
+//   const userPromises = userIds.map(async (userId) => {
+//     const userInfo = await getUserInfo(userId);
+//     usersMap[userId] = userInfo;
+//   });
   
-  await Promise.all(userPromises);
-  return usersMap;
-};
+//   await Promise.all(userPromises);
+//   return usersMap;
+// };
 
 // Get notifications for a user
 router.get('/notifications', authenticate, async (req: Request, res: Response) => {
