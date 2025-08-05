@@ -11,7 +11,7 @@ const app = express();
 
 // Determine CORS origin based on environment
 const corsOrigin = process.env.NODE_ENV === 'production' 
-  ? 'https://pin-oy.vercel.app' 
+  ? 'https://pin-oy.vercel.apps' 
   : 'http://localhost:5173';
 
 // Configure CORS
