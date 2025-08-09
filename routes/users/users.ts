@@ -443,6 +443,31 @@ router.get('/profile', authenticate, async (req: Request, res: Response) => {
   }
 });
 
+// Get user profile by ID (public access)
+router.get('/:userId', async (req: Request, res: Response) => {
+  try {
+    const userId = req.params.userId;
+
+    console.log('Fetching public profile for user:', userId);
+
+    const { data: userData, error } = await supabase
+      .from('users')
+      .select('id, full_name, email, profile_picture, full_address, latitude, longitude, email_verified, created_at')
+      .eq('id', userId)
+      .single();
+
+    if (error || !userData) {
+      console.error('Profile fetch error:', error?.message || 'No user found');
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    console.log('Public profile fetched successfully for user:', userId);
+    res.json({ user: userData });
+  } catch (error) {
+    console.error('Public profile endpoint error:', error);
+    res.status(500).json({ error: 'Failed to fetch user profile' });
+  }
+});
 
 
 export default router;

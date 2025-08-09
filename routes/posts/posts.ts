@@ -11,14 +11,13 @@ import {
 import { authenticate } from '../../middleware/auth';
 import { uploadImageToSupabase } from '../../utils/uploadImageToSupabase';
 import { 
-  cache,
   safeGetCache,
   safeSetCache,
   autoInvalidateCache, 
-  invalidatePostsCache, 
   invalidateUserPostsCache, 
   invalidateSinglePostCache 
 } from '../../utils/cache';
+import { analyzeImagesBatch, type ExplicitContentAnalysis, type ImageAnalysisDetail } from '../../middleware/combinedImageAnalysis';
 
 const router = Router();
 
@@ -48,19 +47,6 @@ const getUserInfo = async (userId: string) => {
     email_verified: false
   };
 };
-
-// Batch get user info for multiple users
-// const getUsersInfo = async (userIds: string[]) => {
-//   const usersMap: Record<string, any> = {};
-  
-//   const userPromises = userIds.map(async (userId) => {
-//     const userInfo = await getUserInfo(userId);
-//     usersMap[userId] = userInfo;
-//   });
-  
-//   await Promise.all(userPromises);
-//   return usersMap;
-// };
 
 // Get notifications for a user
 router.get('/notifications', authenticate, async (req: Request, res: Response) => {
@@ -275,7 +261,7 @@ router.post(
     { name: 'custom_pin', maxCount: 1 }
   ]),
   comprehensiveValidation,
-  autoInvalidateCache(req => 'posts'),
+  autoInvalidateCache(_req => 'posts'),
   async (req: Request, res: Response) => {
   try {
     const { type, description, lat, lng, location, link, emoji } = req.body;
@@ -380,7 +366,7 @@ router.post(
   }
 });
 
-// Get posts
+// Replace the existing GET posts route with this updated version:
 router.get('/', async (req: Request, res: Response) => {
   try {
     const { dateFilter, sortKey = 'timestamp', sortOrder = 'desc', userId, page = '1', limit = '10', exclude } = req.query;
@@ -409,12 +395,10 @@ router.get('/', async (req: Request, res: Response) => {
     // Apply filters
     if (userId) {
       query = query.eq('user_id', userId);
-      console.log('Filtering by user ID:', userId);
     }
 
     if (exclude) {
       query = query.neq('id', exclude);
-      console.log('Excluding post ID:', exclude);
     }
 
     if (dateFilter && dateFilter !== 'all') {
@@ -439,7 +423,6 @@ router.get('/', async (req: Request, res: Response) => {
       }
       
       query = query.gte('timestamp', cutoffDate.toISOString());
-      console.log('Applying date filter:', dateFilter, 'from:', cutoffDate.toISOString());
     }
 
     // Apply sorting
@@ -502,7 +485,7 @@ router.get('/', async (req: Request, res: Response) => {
             .eq('user_id', authUserId)
             .single();
           
-          return {
+          postWithUser = {
             ...postWithUser,
             liked: !!like,
             likes: post.likes || 0,
@@ -510,7 +493,7 @@ router.get('/', async (req: Request, res: Response) => {
           };
         } catch (likeError) {
           console.warn(`Failed to fetch like status for post ${post.id}:`, likeError);
-          return {
+          postWithUser = {
             ...postWithUser,
             liked: false,
             likes: post.likes || 0,
@@ -518,18 +501,47 @@ router.get('/', async (req: Request, res: Response) => {
           };
         }
       } else {
-        return {
+        postWithUser = {
           ...postWithUser,
           liked: false,
           likes: post.likes || 0,
           views: post.views || 0
         };
       }
+
+      // Analyze images for explicit content
+      let explicitContentAnalysis: ExplicitContentAnalysis = {
+        hasExplicitContent: false,
+        confidence: 0,
+        details: [],
+        hasExplicitText: false,
+        textConfidence: 0,
+        detectedCategories: []
+      };
+
+      if (post.image_url && Array.isArray(post.image_url) && post.image_url.length > 0) {
+        console.log(`Analyzing ${post.image_url.length} images for post ${post.id}...`);
+        
+        try {
+          explicitContentAnalysis = await analyzeImagesBatch(post.image_url);
+
+          if (explicitContentAnalysis.hasExplicitContent) {
+            console.log(`⚠️  Explicit content detected in post ${post.id} - Skin: ${explicitContentAnalysis.confidence}, Text: ${explicitContentAnalysis.textConfidence}, Categories: ${explicitContentAnalysis.detectedCategories.join(', ')}`);
+          }
+
+        } catch (analysisError) {
+          console.warn(`Failed to analyze images for post ${post.id}:`, analysisError);
+        }
+      }
+
+      return {
+        ...postWithUser,
+        explicit_content: explicitContentAnalysis
+      };
     }));
 
     // Cache the results (1-minute TTL)
     safeSetCache(cacheKey, postsWithUserAndLikes, 60);
-    console.log('Posts fetched successfully:', postsWithUserAndLikes.length, 'posts');
 
     res.json(postsWithUserAndLikes);
   } catch (error) {
@@ -538,17 +550,14 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
-// Get post by ID
+// Also update the single post GET route:
 router.get('/:newId', async (req: Request, res: Response) => {
   try {
     const newId = req.params.newId;
 
-    console.log('Fetching post by new_id:', newId);
-
     const cacheKey = `post:${newId}`;
     const cached = safeGetCache(cacheKey);
     if (cached) {
-      console.log('Returning cached post for:', newId);
       return res.json(cached);
     }
 
@@ -573,10 +582,39 @@ router.get('/:newId', async (req: Request, res: Response) => {
       };
     }
 
-    safeSetCache(cacheKey, postWithUser, 300); // Cache for 5 minutes
+    // Analyze images for explicit content
+    let explicitContentAnalysis: ExplicitContentAnalysis = {
+      hasExplicitContent: false,
+      confidence: 0,
+      details: [],
+      hasExplicitText: false,
+      textConfidence: 0,
+      detectedCategories: []
+    };
 
-    console.log('Post fetched successfully by new_id:', newId);
-    res.json(postWithUser);
+    if (post.image_url && Array.isArray(post.image_url) && post.image_url.length > 0) {
+      console.log(`Analyzing ${post.image_url.length} images for post ${post.id}...`);
+      
+      try {
+        explicitContentAnalysis = await analyzeImagesBatch(post.image_url);
+
+        if (explicitContentAnalysis.hasExplicitContent) {
+          console.log(`⚠️  Explicit content detected in post ${post.id} - Skin: ${explicitContentAnalysis.confidence}, Text: ${explicitContentAnalysis.textConfidence}, Categories: ${explicitContentAnalysis.detectedCategories.join(', ')}`);
+        }
+
+      } catch (analysisError) {
+        console.warn(`Failed to analyze images for post ${post.id}:`, analysisError);
+      }
+    }
+
+    const finalPost = {
+      ...postWithUser,
+      explicit_content: explicitContentAnalysis
+    };
+
+    safeSetCache(cacheKey, finalPost, 300); // Cache for 5 minutes
+
+    res.json(finalPost);
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({ error: 'Failed to fetch post' });

@@ -2,8 +2,10 @@ import { Request, Response, NextFunction } from 'express';
 import * as validator from 'validator';
 import multer from 'multer';
 import leoProfanity from 'leo-profanity';
+import axios from 'axios'
+import FormData from 'form-data';
 
-// Type definitions (unchanged)
+// Type definitions
 interface AuthenticatedRequest extends Request {
   user: {
     id: string;
@@ -30,8 +32,9 @@ interface PostBody {
   emoji?: string;
 }
 
-// Initialize leo-profanity with custom bad words
+// Enhanced bad words list with more explicit terms
 const badWords: string[] = [
+  // Existing bad words
   'putang', 'tangina', 'gago', 'ulol', 'bobo', 'tanga',
   'leche', 'pakyu', 'shet', 'buwisit', 'kupal', 'hinayupak',
   'kingina', 'tarantado', 'peste', 'inutil', 'walang kwenta',
@@ -45,26 +48,68 @@ const badWords: string[] = [
   'mofo', 'jerkoff', 'bastardo', 'mf', 'biatch', 'asswipe', 'cringeass',
   'licker', 'sucker', 'nutsack', 'nutjob', 'crackhead', 'trashbag', 'smegma',
   'wanker', 'git', 'bollocks', 'bloody', 'arsehole',
+  // Additional explicit terms
+  'porn', 'xxx', 'adult', 'erotic', 'nude', 'naked', 'sex', 'blowjob', 'cum',
+  'orgasm', 'masturbate', 'anal', 'vaginal', 'boob', 'tits', 'ass', 'booty',
+  'clit', 'dildo', 'vibrator', 'hardcore', 'softcore', 'webcam', 'camgirl',
+  'escort', 'prostitute', 'strip', 'bukkake', 'gangbang', 'milf', 'teen',
+  'amateur', 'threesome', 'bdsm', 'kink', 'fetish', 'swinger', 'orgy',
+  'creampie', 'cumshot', 'facial', 'squirt', 'nsfw', 'onlyfans'
 ];
+
+// Analyze image metadata and filename for suspicious content
+const analyzeImageMetadata = (file: Express.Multer.File, filename: string): string[] => {
+  const errors: string[] = [];
+
+  const lowerFilename = filename.toLowerCase();
+  const foundTerms = badWords.filter(term => lowerFilename.includes(term));
+  
+  if (foundTerms.length > 0) {
+    errors.push(`Image filename contains inappropriate terms and cannot be uploaded`);
+    console.log(`🚫 Blocked terms found: ${foundTerms.join(', ')}`);
+  }
+  
+  // Check for suspicious file patterns
+  if (lowerFilename.match(/\d{4}-\d{2}-\d{2}.*\.(jpg|png)/i)) {
+    // Pattern often used for adult content screenshots
+    console.warn(`Suspicious filename pattern detected: ${filename}`);
+  }
+
+  // Check for suspicious patterns
+  const suspiciousPatterns = [
+    /only.*fans?/i,
+    /leak.*ed/i,
+    /private.*pics?/i,
+    /hot.*girl/i,
+    /sexy.*teen/i,
+    /adult.*content/i
+  ];
+  
+  if (suspiciousPatterns.some(pattern => pattern.test(filename))) {
+    errors.push('Image filename contains suspicious content patterns');
+  }
+  
+  return errors;
+};
 
 leoProfanity.add(badWords);
 
-// Sexual content detection patterns (unchanged)
+// Enhanced sexual content detection patterns
 const sexualContentPatterns: RegExp[] = [
-  /\b(sex|porn|xxx|nude|naked|breast|penis|vagina|fuck|orgasm)\b/gi,
-  /\b(hookup|horny|sexy|hot\s*girl|hot\s*guy|escort|massage)\b/gi,
-  /\b(dating|single|lonely|call\s*me|dm\s*me)\b/gi,
-  /\b(kantot|chupa|jakol|tamod|titi|puke|suso|libog)\b/gi,
+  /\b(sex|porn|xxx|nude|naked|breast|penis|vagina|fuck|orgasm|blowjob|cum|anal|vaginal|boob|tits|ass|booty|clit|dildo|vibrator|hardcore|softcore|webcam|camgirl|escort|prostitute|strip|bukkake|gangbang|milf|teen|amateur|threesome|bdsm|kink|fetish|swinger|orgy|creampie|cumshot|facial|squirt|nsfw|onlyfans)\b/gi,
+  /\b(hookup|horny|sexy|hot\s*girl|hot\s*guy|escort|massage|adult\s*content|live\s*cam|web\s*cam|sex\s*chat|erotic\s*chat)\b/gi,
+  /\b(dating|single|lonely|call\s*me|dm\s*me|meet\s*up|hook\s*up|nsfw\s*content|adult\s*site)\b/gi,
+  /\b(kantot|chupa|jakol|tamod|titi|puke|suso|libog|pekpek|iyot|salsal|tete)\b/gi,
 ];
 
-// Malicious URL patterns (unchanged)
+// Enhanced malicious URL patterns
 const maliciousUrlPatterns: RegExp[] = [
-  /\b(bit\.ly|tinyurl|shorturl|t\.co|goo\.gl|ow\.ly)\b/gi,
-  /\b(download|click|free|win|prize|gift|money|cash)\b/gi,
-  /\.(exe|bat|scr|vbs|jar|com|pif|cmd)(\?|$)/gi,
+  /\b(bit\.ly|tinyurl|shorturl|t\.co|goo\.gl|ow\.ly|is\.gd|shorte\.st|adf\.ly|bc\.vc)\b/gi,
+  /\b(download|click|free|win|prize|gift|money|cash|adult|porn|xxx|sex|erotic|nude|cam|webcam)\b/gi,
+  /\.(exe|bat|scr|vbs|jar|com|pif|cmd|zip|rar|7z)(\?|$)/gi,
 ];
 
-// Blocked domains list (unchanged)
+// Expanded blocked domains list
 const blockedDomains: string[] = [
   'malware-site.com',
   'phishing-site.net',
@@ -75,6 +120,27 @@ const blockedDomains: string[] = [
   'anonfiles.com',
   'tempmail.org',
   'guerrillamail.com',
+  // Adult content domains
+  'pornhub.com',
+  'xvideos.com',
+  'xnxx.com',
+  'youporn.com',
+  'redtube.com',
+  'tube8.com',
+  'brazzers.com',
+  'onlyfans.com',
+  'livejasmin.com',
+  'chaturbate.com',
+  'xhamster.com',
+  'adultfriendfinder.com',
+  'camsoda.com',
+  'manyvids.com',
+  'erome.com',
+  'fapello.com',
+  'nsfw.xxx',
+  'porntube.com',
+  'spankbang.com',
+  'daftsex.com'
 ];
 
 // Content validation middleware
@@ -98,7 +164,7 @@ export const validateContent = async (
 
       for (const pattern of sexualContentPatterns) {
         if (pattern.test(description)) {
-          const error: ValidationError = new Error('Content contains inappropriate material. Please modify your description.');
+          const error: ValidationError = new Error('Content contains explicit or inappropriate material. Please modify your description.');
           error.statusCode = 400;
           throw error;
         }
@@ -131,7 +197,7 @@ export const validateContent = async (
 
       for (const pattern of maliciousUrlPatterns) {
         if (pattern.test(link)) {
-          const error: ValidationError = new Error('Suspicious URL detected. Please use direct links only.');
+          const error: ValidationError = new Error('Suspicious or explicit URL detected. Please use direct, safe links only.');
           error.statusCode = 400;
           throw error;
         }
@@ -140,7 +206,7 @@ export const validateContent = async (
       try {
         const urlDomain = new URL(link).hostname.toLowerCase();
         if (blockedDomains.some((domain) => urlDomain.includes(domain))) {
-          const error: ValidationError = new Error('This domain is not allowed. Please use a different link.');
+          const error: ValidationError = new Error('This domain is not allowed due to explicit or unsafe content.');
           error.statusCode = 400;
           throw error;
         }
@@ -159,7 +225,16 @@ export const validateContent = async (
   }
 };
 
-// Image content validation (unchanged)
+// Sanitize filename helper
+const sanitizeFilename = (filename: string): string => {
+  return filename
+    .replace(/[^\w\s.-]/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/_{2,}/g, '_')
+    .substring(0, 100);
+};
+
+// Replace your validateImages function with this improved version
 export const validateImages = async (
   req: AuthenticatedRequest,
   res: Response,
@@ -177,6 +252,7 @@ export const validateImages = async (
       ];
 
       for (const image of allImages) {
+        // Basic file checks
         if (image.size > 5 * 1024 * 1024) {
           const error: ValidationError = new Error('Image file too large. Maximum 5MB allowed.');
           error.statusCode = 400;
@@ -198,20 +274,34 @@ export const validateImages = async (
           throw error;
         }
 
+        // Create safe filename
+        const safeFilename = sanitizeFilename(image.originalname);
+        console.log(`Analyzing image for inappropriate content: ${safeFilename}`);
+
         const suspiciousPatterns: RegExp[] = [
           /\.(exe|bat|scr|vbs|jar|com|pif|cmd)$/gi,
           /\.(php|jsp|asp|aspx)$/gi,
         ];
 
-        if (suspiciousPatterns.some((pattern) => pattern.test(image.originalname))) {
+        if (suspiciousPatterns.some((pattern) => pattern.test(safeFilename))) {
           const error: ValidationError = new Error('Suspicious file name detected.');
           error.statusCode = 400;
           throw error;
         }
+
+        // Filename and metadata analysis
+        const metadataErrors = analyzeImageMetadata(image, safeFilename);
+        if (metadataErrors.length > 0) {
+          console.log(`❌ BLOCKED by metadata analysis: ${safeFilename} - ${metadataErrors[0]}`);
+          const error: ValidationError = new Error(metadataErrors[0]);
+          error.statusCode = 400;
+          throw error;
+        }        
+        console.log(`All available validations completed for: ${safeFilename}`);
       }
     }
 
-    console.log('Image validation passed for user:', req.user.id);
+    console.log('Image validation completed for user:', req.user.id);
     next();
   } catch (error: any) {
     console.error('Image validation error for user:', req.user.id, error.message);
@@ -219,7 +309,7 @@ export const validateImages = async (
   }
 };
 
-// Rate limiting for post submissions (unchanged)
+// Rate limiting for post submissions
 const rateLimitMap = new Map<string, number[]>();
 
 export const rateLimit = (
@@ -255,7 +345,7 @@ export const rateLimit = (
   }
 };
 
-// IP-based rate limiting and blacklisting (unchanged)
+// IP-based rate limiting and blacklisting
 const ipRateLimitMap = new Map<string, RateLimitEntry>();
 
 export const advancedRateLimit = (
@@ -309,7 +399,7 @@ export const advancedRateLimit = (
   }
 };
 
-// Enhanced file upload configuration (unchanged)
+// Enhanced file upload configuration
 export const enhancedFileUpload = multer({
   limits: {
     fileSize: 5 * 1024 * 1024, // 5MB
@@ -338,19 +428,17 @@ export const enhancedFileUpload = multer({
   },
 });
 
-// Database sanitization function (unchanged)
+// Database sanitization function
 export const sanitizeForDatabase = (input: any): any => {
   if (typeof input !== 'string') return input;
-
   return input
-    .replace(/[<>]/g, '')
-    .replace(/javascript:/gi, '')
-    .replace(/on\w+\s*=/gi, '')
-    .replace(/['"]/g, '')
-    .trim();
+    // .replace(/[^\w\s.-]/g, '') // Remove special characters except word chars, spaces, dots, hyphens
+    // .replace(/\s+/g, '_') // Replace spaces with underscores
+    // .replace(/_{2,}/g, '_') // Replace multiple underscores with single
+    .substring(0, 150); // Limit length
 };
 
-// Comprehensive validation middleware (unchanged)
+// Comprehensive validation middleware
 export const comprehensiveValidation = async (
   req: Request,
   res: Response,
