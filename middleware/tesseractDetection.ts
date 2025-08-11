@@ -91,8 +91,6 @@ function analyzeTextContent(text: string): {
  */
 export async function analyzeImageText(imageUrl: string): Promise<TextAnalysisResult> {
   try {
-    console.log('Starting OCR analysis for:', imageUrl);
-
     // Perform OCR on the image
     const { data } = await Tesseract.recognize(imageUrl, 'eng', {
       logger: m => {
@@ -113,8 +111,6 @@ export async function analyzeImageText(imageUrl: string): Promise<TextAnalysisRe
         extractedText: ''
       };
     }
-
-    // console.log('Extracted text:', extractedText.substring(0, 100) + '...');
 
     // Analyze the extracted text
     const analysis = analyzeTextContent(extractedText);

@@ -2,18 +2,19 @@ import { Router, Request, Response } from 'express';
 import { supabase } from '../../utils/supabase';
 import { authenticate } from '../../middleware/auth';
 import { invalidateNotificationCache, autoInvalidateCache, invalidatePostsCache } from '../../utils/cache';
+import { syncUserToPublicTable } from '../../middleware/syncUser';
 
 const router = Router();
 
 // Add like
-router.post('/:id/likes', authenticate, autoInvalidateCache(req => req.user.id), async (req: Request, res: Response) => {
+router.post('/:id/likes', authenticate, syncUserToPublicTable, autoInvalidateCache(req => req.user.id), async (req: Request, res: Response) => {
   try {
-    const postId = req.params.id;
+const postId = req.params.id;
     const userId = (req as any).user.id;
 
     console.log('Adding like to post:', postId, 'by user:', userId);
 
-    // Check if user exists in users table
+    // IMPORTANT: Ensure user exists in public.users table
     const { data: userExists } = await supabase
       .from('users')
       .select('id')
@@ -21,10 +22,39 @@ router.post('/:id/likes', authenticate, autoInvalidateCache(req => req.user.id),
       .single();
       
     if (!userExists) {
-      console.log('User not found in users table:', userId);
-      return res.status(400).json({ error: 'User not found in database' });
+      console.log('User not found in public.users table, creating entry...');
+      
+      // Get user info from auth.users
+      const { data: { user: authUser }, error: authError } = await supabase.auth.admin.getUserById(userId);
+      
+      if (authError || !authUser) {
+        console.error('Failed to get auth user:', authError);
+        return res.status(400).json({ error: 'User authentication failed' });
+      }
+
+      // Create user in public.users table with required fields
+      const { error: createError } = await supabase
+        .from('users')
+        .insert({
+          id: userId,
+          email: authUser.email || 'unknown@example.com',
+          full_name: authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'Anonymous',
+          full_address: authUser.user_metadata?.full_address || 'Not specified',
+          latitude: authUser.user_metadata?.latitude || 0,
+          longitude: authUser.user_metadata?.longitude || 0,
+          email_verified: authUser.email_confirmed_at ? true : false,
+          profile_picture: authUser.user_metadata?.profile_picture || null
+        });
+
+      if (createError) {
+        console.error('Failed to create user in public.users:', createError);
+        return res.status(500).json({ error: 'Failed to sync user data' });
+      }
+      
+      console.log('User created in public.users table');
     }
 
+    // Now proceed with the like operation...
     // Check if user already liked this post
     const { data: existingLike } = await supabase
       .from('post_likes')
@@ -39,16 +69,28 @@ router.post('/:id/likes', authenticate, autoInvalidateCache(req => req.user.id),
     }
 
     // Add like record
-    const { error: likeError } = await supabase
+    const { data: likeData, error: likeError } = await supabase
       .from('post_likes')
-      .insert({ post_id: postId, user_id: userId });
+      .insert({ 
+        post_id: postId, 
+        user_id: userId 
+      })
+      .select()
+      .single();
 
     if (likeError) {
-      console.error('Like error:', likeError);
-      return res.status(500).json({ error: 'Failed to add like' });
+      console.error('Like error details:', {
+        code: likeError.code,
+        message: likeError.message,
+        details: likeError.details,
+        hint: likeError.hint
+      });
+      return res.status(500).json({ error: 'Failed to add like: ' + likeError.message });
     }
 
-    // Get current likes count and post info
+    console.log('Like record created:', likeData);
+
+    // Get current post data
     const { data: post, error: fetchError } = await supabase
       .from('posts')
       .select('likes, user_id, new_id')
@@ -57,19 +99,33 @@ router.post('/:id/likes', authenticate, autoInvalidateCache(req => req.user.id),
 
     if (fetchError) {
       console.error('Fetch error:', fetchError);
+      // Rollback the like
+      await supabase
+        .from('post_likes')
+        .delete()
+        .eq('post_id', postId)
+        .eq('user_id', userId);
       return res.status(500).json({ error: 'Failed to update likes count' });
     }
 
     const newLikesCount = (post.likes || 0) + 1;
 
     // Update likes count
-    const { error: incrementError } = await supabase
+    const { data: updatedPost, error: incrementError } = await supabase
       .from('posts')
       .update({ likes: newLikesCount })
-      .eq('id', postId);
+      .eq('id', postId)
+      .select('likes')
+      .single();
 
     if (incrementError) {
       console.error('Increment error:', incrementError);
+      // Rollback the like
+      await supabase
+        .from('post_likes')
+        .delete()
+        .eq('post_id', postId)
+        .eq('user_id', userId);
       return res.status(500).json({ error: 'Failed to increment likes' });
     }
 
@@ -122,7 +178,19 @@ router.delete('/:id/likes', authenticate, autoInvalidateCache(req => req.user.id
 
     console.log('Removing like from post:', postId, 'by user:', userId);
 
-    // Check if user has liked this post
+    // Ensure user exists in public.users (same check as above)
+    const { data: userExists } = await supabase
+      .from('users')
+      .select('id')
+      .eq('id', userId)
+      .single();
+      
+    if (!userExists) {
+      console.log('User not found in public.users table');
+      return res.status(400).json({ error: 'User data not synced' });
+    }
+
+    // Rest of the delete logic...
     const { data: existingLike } = await supabase
       .from('post_likes')
       .select('*')
@@ -144,7 +212,7 @@ router.delete('/:id/likes', authenticate, autoInvalidateCache(req => req.user.id
 
     if (unlikeError) {
       console.error('Unlike error:', unlikeError);
-      return res.status(500).json({ error: 'Failed to remove like' });
+      return res.status(500).json({ error: 'Failed to remove like: ' + unlikeError.message });
     }
 
     // Get current likes count
@@ -162,21 +230,20 @@ router.delete('/:id/likes', authenticate, autoInvalidateCache(req => req.user.id
     const newLikesCount = Math.max(0, (post.likes || 0) - 1);
 
     // Update likes count
-    const { error: decrementError } = await supabase
+    const { data: updatedPost, error: decrementError } = await supabase
       .from('posts')
       .update({ likes: newLikesCount })
-      .eq('id', postId);
+      .eq('id', postId)
+      .select('likes')
+      .single();
 
     if (decrementError) {
       console.error('Decrement error:', decrementError);
       return res.status(500).json({ error: 'Failed to decrement likes' });
     }
 
-    // Invalidate posts cache since likes count affects sorting
-    invalidatePostsCache();
-
     console.log('Like removed successfully. New count:', newLikesCount);
-    res.json({ likes: newLikesCount });
+    res.json({ likes: newLikesCount, liked: false });
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({ error: 'Failed to remove like' });
@@ -187,8 +254,6 @@ router.delete('/:id/likes', authenticate, autoInvalidateCache(req => req.user.id
 router.get('/:id/likes', async (req: Request, res: Response) => {
   try {
     const postId = req.params.id;
-
-    console.log('Getting likes count for post:', postId);
 
     const { data: post, error: fetchError } = await supabase
       .from('posts')
@@ -208,7 +273,6 @@ router.get('/:id/likes', async (req: Request, res: Response) => {
 
     const likesCount = post.likes || 0;
 
-    console.log('Likes count for post:', postId, '=', likesCount);
     res.json({ likes: likesCount });
   } catch (error) {
     console.error('Server error:', error);
@@ -221,8 +285,6 @@ router.get('/:id/likes/status', authenticate, async (req: Request, res: Response
   try {
     const postId = req.params.id;
     const userId = (req as any).user.id;
-
-    console.log('Getting like status for post:', postId, 'user:', userId);
 
     const { data: existingLike } = await supabase
       .from('post_likes')

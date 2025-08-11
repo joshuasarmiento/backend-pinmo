@@ -15,7 +15,6 @@ const upload = multer({
     fileSize: 5 * 1024 * 1024, // 5MB limit
   },
   fileFilter: (req, file, cb) => {
-    console.log('File filter - MIME type:', file.mimetype);
     if (file.mimetype.startsWith('image/')) {
       cb(null, true);
     } else {
@@ -30,10 +29,6 @@ async function uploadProfilePicture(file: Express.Multer.File, userId: string): 
     const fileName = `${userId}/${uuidv4()}-${file.originalname}`;
     const filePath = `profile-pictures/${fileName}`;
 
-    console.log('Uploading file to path:', filePath);
-    console.log('File size:', file.size, 'bytes');
-    console.log('File type:', file.mimetype);
-
     const { data, error } = await supabase.storage
       .from('pinmo-images')
       .upload(filePath, file.buffer, {
@@ -46,14 +41,11 @@ async function uploadProfilePicture(file: Express.Multer.File, userId: string): 
       throw new Error(`Failed to upload profile picture: ${error.message}`);
     }
 
-    console.log('File uploaded successfully:', data.path);
-
     // Get public URL
     const { data: publicData } = supabase.storage
       .from('pinmo-images')
       .getPublicUrl(filePath);
 
-    console.log('Public URL generated:', publicData.publicUrl);
     return publicData.publicUrl;
   } catch (error) {
     console.error('Upload helper error:', error);
@@ -65,8 +57,6 @@ async function uploadProfilePicture(file: Express.Multer.File, userId: string): 
 router.post('/register', async (req: Request, res: Response) => {
   try {
     const { full_name, email, password, full_address, latitude, longitude } = req.body;
-
-    console.log('Registration attempt for email:', email);
 
     // Validate required fields
     if (!full_name || !email || !password || !full_address || !latitude || !longitude) {
@@ -151,8 +141,6 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
   try {
     const { email } = req.body;
 
-    console.log('Password reset requested for email:', email);
-
     // Validate email
     if (!email) {
       console.log('Missing email field');
@@ -200,7 +188,6 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
       return res.status(500).json({ error: 'Failed to send reset email' });
     }
 
-    console.log('Password reset email sent for:', email);
     res.status(200).json({ message: 'Password reset email sent' });
   } catch (error) {
     console.error('Forgot password error:', error);
@@ -212,8 +199,6 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
 router.post('/reset-password', async (req: Request, res: Response) => {
   try {
     const { token, newPassword } = req.body;
-
-    console.log('Password reset attempt with token');
 
     // Validate inputs
     if (!token || !newPassword) {
@@ -283,8 +268,6 @@ router.post('/login', async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
 
-    console.log('Login attempt for email:', email);
-
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password
@@ -294,8 +277,6 @@ router.post('/login', async (req: Request, res: Response) => {
       console.log('Login failed:', error?.message);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-
-    console.log('Auth login successful for user:', data.user.id);
 
     // Check if email is verified
     const { data: userData } = await supabase
@@ -327,8 +308,6 @@ router.put('/profile', authenticate, async (req: Request, res: Response) => {
     const { full_name, email, full_address, latitude, longitude } = req.body;
     const userId = (req as any).user.id;
 
-    console.log('Profile update request for user:', userId);
-
     // Note: We skip updating auth metadata from backend since it requires user session
     // The frontend will handle auth metadata updates after successful database update
     console.log('Skipping auth metadata update from backend (requires user session)');
@@ -351,7 +330,6 @@ router.put('/profile', authenticate, async (req: Request, res: Response) => {
       return res.status(500).json({ error: 'Failed to update user profile' });
     }
 
-    console.log('Profile updated successfully for user:', userId);
     res.json({ message: 'Profile updated successfully' });
   } catch (error) {
     console.error('Profile update error:', error);
@@ -365,19 +343,10 @@ router.post('/profile/picture', authenticate, upload.single('profile_picture'), 
     const userId = (req as any).user.id;
     const file = req.file as Express.Multer.File;
 
-    console.log('Profile picture upload request for user:', userId);
-    console.log('File received:', !!file);
-
     if (!file) {
       console.log('No file in request');
       return res.status(400).json({ error: 'No file uploaded' });
     }
-
-    console.log('File details:', {
-      originalname: file.originalname,
-      mimetype: file.mimetype,
-      size: file.size
-    });
 
     // Upload file to Supabase Storage
     const profilePictureUrl = await uploadProfilePicture(file, userId);
@@ -400,7 +369,6 @@ router.post('/profile/picture', authenticate, upload.single('profile_picture'), 
       return res.status(500).json({ error: 'Failed to save profile picture' });
     }
 
-    console.log('Profile picture updated successfully for user:', userId);
     res.json({ 
       message: 'Profile picture updated successfully', 
       profile_picture: profilePictureUrl 
@@ -448,8 +416,6 @@ router.get('/:userId', async (req: Request, res: Response) => {
   try {
     const userId = req.params.userId;
 
-    console.log('Fetching public profile for user:', userId);
-
     const { data: userData, error } = await supabase
       .from('users')
       .select('id, full_name, email, profile_picture, full_address, latitude, longitude, email_verified, created_at')
@@ -461,7 +427,6 @@ router.get('/:userId', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    console.log('Public profile fetched successfully for user:', userId);
     res.json({ user: userData });
   } catch (error) {
     console.error('Public profile endpoint error:', error);

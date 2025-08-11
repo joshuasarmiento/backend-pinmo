@@ -23,9 +23,6 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       return res.status(401).json({ error: 'Invalid token' });
     }
 
-    console.log('Verifying token...');
-    console.log('Token length:', token.length);
-    console.log('Token preview:', token.substring(0, 20) + '...');
 
     const { data: { user }, error } = await supabase.auth.getUser(token);
 
@@ -39,7 +36,6 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       return res.status(401).json({ error: 'User not found' });
     }
 
-    console.log('Token verified successfully for user:', user.id);
     (req as any).user = user;
     next();
   } catch (error) {

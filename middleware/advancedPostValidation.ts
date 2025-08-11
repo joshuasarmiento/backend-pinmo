@@ -243,8 +243,6 @@ export const validateImages = async (
   try {
     const files = req.files;
 
-    console.log('Validating images for user:', req.user.id);
-
     if (files?.images || files?.custom_pin) {
       const allImages: Express.Multer.File[] = [
         ...(files.images || []),
@@ -276,7 +274,6 @@ export const validateImages = async (
 
         // Create safe filename
         const safeFilename = sanitizeFilename(image.originalname);
-        console.log(`Analyzing image for inappropriate content: ${safeFilename}`);
 
         const suspiciousPatterns: RegExp[] = [
           /\.(exe|bat|scr|vbs|jar|com|pif|cmd)$/gi,
@@ -292,16 +289,13 @@ export const validateImages = async (
         // Filename and metadata analysis
         const metadataErrors = analyzeImageMetadata(image, safeFilename);
         if (metadataErrors.length > 0) {
-          console.log(`❌ BLOCKED by metadata analysis: ${safeFilename} - ${metadataErrors[0]}`);
           const error: ValidationError = new Error(metadataErrors[0]);
           error.statusCode = 400;
           throw error;
         }        
-        console.log(`All available validations completed for: ${safeFilename}`);
       }
     }
 
-    console.log('Image validation completed for user:', req.user.id);
     next();
   } catch (error: any) {
     console.error('Image validation error for user:', req.user.id, error.message);
@@ -323,13 +317,10 @@ export const rateLimit = (
     const windowMs: number = 15 * 60 * 1000; // 15 minutes
     const maxAttempts: number = 5; // 5 posts per 15 minutes
 
-    console.log('Checking rate limit for user:', userId);
-
     const userAttempts: number[] = rateLimitMap.get(userId) || [];
     const recentAttempts: number[] = userAttempts.filter((time) => now - time < windowMs);
 
     if (recentAttempts.length >= maxAttempts) {
-      console.log('Rate limit exceeded for user:', userId);
       res.status(429).json({ error: 'Too many posts. Please wait before submitting again.' });
       return;
     }
@@ -337,7 +328,6 @@ export const rateLimit = (
     recentAttempts.push(now);
     rateLimitMap.set(userId, recentAttempts);
 
-    console.log('Rate limit check passed for user:', userId);
     next();
   } catch (error: any) {
     console.error('Rate limit error for user:', (req as any).user?.id, error.message);
@@ -359,15 +349,12 @@ export const advancedRateLimit = (
     const windowMs: number = 60 * 1000; // 1 minute
     const maxRequests: number = 10; // 10 requests per minute per IP
 
-    console.log('Checking IP rate limit for:', clientIP);
-
     const entry: RateLimitEntry = ipRateLimitMap.get(clientIP) || {
       attempts: [],
       blacklisted: false,
     };
 
     if (entry.blacklisted) {
-      console.log('Blacklisted IP detected:', clientIP);
       res.status(403).json({ error: 'Access denied' });
       return;
     }
@@ -380,10 +367,8 @@ export const advancedRateLimit = (
 
       if (recentViolations.length > 50) {
         entry.blacklisted = true;
-        console.log(`IP ${clientIP} blacklisted for excessive requests`);
       }
 
-      console.log('IP rate limit exceeded:', clientIP);
       res.status(429).json({ error: 'Rate limit exceeded. Please slow down.' });
       return;
     }
@@ -391,7 +376,6 @@ export const advancedRateLimit = (
     entry.attempts.push(now);
     ipRateLimitMap.set(clientIP, entry);
 
-    console.log('IP rate limit check passed for:', clientIP);
     next();
   } catch (error: any) {
     console.error('IP rate limit error for IP:', req.ip, error.message);
@@ -445,8 +429,6 @@ export const comprehensiveValidation = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    console.log('Starting comprehensive validation for user:', (req as any).user.id);
-
     // Sanitize inputs
     if (req.body.type) req.body.type = sanitizeForDatabase(req.body.type);
     if (req.body.description) req.body.description = sanitizeForDatabase(req.body.description);
@@ -468,7 +450,6 @@ export const comprehensiveValidation = async (
       });
     });
 
-    console.log('Comprehensive validation passed for user:', (req as any).user.id);
     next();
   } catch (error: any) {
     console.error('Comprehensive validation error for user:', (req as any).user.id, error.message);

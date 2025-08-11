@@ -371,8 +371,6 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const { dateFilter, sortKey = 'timestamp', sortOrder = 'desc', userId, page = '1', limit = '10', exclude } = req.query;
 
-    console.log('Fetching posts with filters:', { dateFilter, sortKey, sortOrder, userId, page, limit, exclude });
-
     // Generate consistent cache key
     const cacheKey = `posts:filter-${dateFilter || 'all'}:sort-${sortKey}:${sortOrder}:user-${userId || 'all'}:page-${page}:limit-${limit}:exclude-${exclude || 'none'}`;
     
@@ -520,7 +518,6 @@ router.get('/', async (req: Request, res: Response) => {
       };
 
       if (post.image_url && Array.isArray(post.image_url) && post.image_url.length > 0) {
-        console.log(`Analyzing ${post.image_url.length} images for post ${post.id}...`);
         
         try {
           explicitContentAnalysis = await analyzeImagesBatch(post.image_url);
@@ -592,9 +589,7 @@ router.get('/:newId', async (req: Request, res: Response) => {
       detectedCategories: []
     };
 
-    if (post.image_url && Array.isArray(post.image_url) && post.image_url.length > 0) {
-      console.log(`Analyzing ${post.image_url.length} images for post ${post.id}...`);
-      
+    if (post.image_url && Array.isArray(post.image_url) && post.image_url.length > 0) {      
       try {
         explicitContentAnalysis = await analyzeImagesBatch(post.image_url);
 

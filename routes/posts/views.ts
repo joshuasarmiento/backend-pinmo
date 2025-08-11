@@ -9,8 +9,6 @@ router.post('/:id/views', async (req: Request, res: Response) => {
   try {
     const postId = req.params.id;
 
-    console.log('Incrementing views for post:', postId);
-
     // Get current post data including new_id for cache invalidation
     const { data: post, error: fetchError } = await supabase
       .from('posts')
@@ -46,7 +44,6 @@ router.post('/:id/views', async (req: Request, res: Response) => {
       invalidateSinglePostCache(post.new_id);
     }
 
-    console.log('Views incremented successfully. New count:', newViewsCount);
     res.json({ views: newViewsCount });
   } catch (error) {
     console.error('Server error:', error);
@@ -58,8 +55,6 @@ router.post('/:id/views', async (req: Request, res: Response) => {
 router.get('/:id/views', async (req: Request, res: Response) => {
   try {
     const postId = req.params.id;
-
-    console.log('Getting views count for post:', postId);
 
     const { data: post, error: fetchError } = await supabase
       .from('posts')
@@ -79,7 +74,6 @@ router.get('/:id/views', async (req: Request, res: Response) => {
 
     const viewsCount = post.views || 0;
 
-    console.log('Views count for post:', postId, '=', viewsCount);
     res.json({ views: viewsCount });
   } catch (error) {
     console.error('Server error:', error);

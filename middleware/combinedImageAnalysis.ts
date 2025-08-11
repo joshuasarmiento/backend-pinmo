@@ -18,7 +18,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
  * Fast image analysis - prioritizes skin detection, OCR with timeout
  */
 export async function analyzeImageFast(imageUrl: string): Promise<ImageAnalysisDetail> {
-  console.log('Starting fast analysis for:', imageUrl);
 
   // Generate cache key for single image analysis
   const cacheKey = `image-analysis:${imageUrl}`;
@@ -26,7 +25,6 @@ export async function analyzeImageFast(imageUrl: string): Promise<ImageAnalysisD
   // Check cache first
   const cachedResult = safeGetCache(cacheKey);
   if (cachedResult) {
-    console.log(`Cache hit for image analysis: ${imageUrl}`);
     return cachedResult as ImageAnalysisDetail;
   }
 
@@ -36,7 +34,6 @@ export async function analyzeImageFast(imageUrl: string): Promise<ImageAnalysisD
 
     // If skin analysis already shows high confidence, skip OCR
     if (skinAnalysis.isExplicit && skinAnalysis.confidence > 0.7) {
-      console.log('High confidence skin detection, skipping OCR for:', imageUrl);
       const result = {
         url: imageUrl,
         isExplicit: true,
@@ -111,7 +108,6 @@ export async function analyzeImageFast(imageUrl: string): Promise<ImageAnalysisD
  * Analyze multiple images with parallel processing and limits
  */
 export async function analyzeImagesBatch(imageUrls: string[]): Promise<ExplicitContentAnalysis> {
-  console.log(`Analyzing ${imageUrls.length} images with optimized batch processing...`);
 
   // Generate cache key for batch analysis
   const batchCacheKey = `batch-image-analysis:${imageUrls.join(',')}`;
@@ -119,7 +115,6 @@ export async function analyzeImagesBatch(imageUrls: string[]): Promise<ExplicitC
   // Check cache for batch result
   const cachedBatchResult = safeGetCache(batchCacheKey);
   if (cachedBatchResult) {
-    console.log('Cache hit for batch image analysis');
     return cachedBatchResult as ExplicitContentAnalysis;
   }
 
@@ -134,7 +129,6 @@ export async function analyzeImagesBatch(imageUrls: string[]): Promise<ExplicitC
     const batchResults = await Promise.all(batchPromises);
     results.push(...batchResults);
     
-    console.log(`Completed batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(imageUrls.length/batchSize)}`);
   }
 
   // Process results

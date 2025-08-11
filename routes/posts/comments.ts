@@ -88,7 +88,7 @@ router.get('/:newId/comments/count', async (req: Request, res: Response) => {
   }
 });
 
-// Get comments for a post
+// Get Comments
 router.get('/:newId/comments', async (req: Request, res: Response) => {
   try {
     const { newId } = req.params;
@@ -126,56 +126,88 @@ router.get('/:newId/comments', async (req: Request, res: Response) => {
       return res.status(500).json({ error: 'Failed to fetch comments' });
     }
 
-    // Fetch all replies for the top-level comments
-    const topLevelCommentIds = topLevelComments.map((c) => c.id);
-    let replies: any[] = [];
-    
-    if (topLevelCommentIds.length > 0) {
-      const { data: repliesData, error: repliesError } = await supabase
-        .from('comments')
-        .select('id, post_id, user_id, parent_id, depth, content, created_at, updated_at, is_deleted')
-        .eq('post_id', postId)
-        .eq('is_deleted', false)
-        .in('parent_id', topLevelCommentIds)
-        .order('created_at', { ascending: true });
+    console.log('Top-level comments fetched:', topLevelComments.length);
 
-      if (repliesError) {
-        console.error('Replies fetch error:', repliesError);
-        return res.status(500).json({ error: 'Failed to fetch replies' });
-      }
-      
-      replies = repliesData || [];
+    // Get ALL comments for this post to build the tree structure
+    // This is more efficient than multiple queries for each depth level
+    const { data: allComments, error: allCommentsError } = await supabase
+      .from('comments')
+      .select('id, post_id, user_id, parent_id, depth, content, created_at, updated_at, is_deleted')
+      .eq('post_id', postId)
+      .eq('is_deleted', false)
+      .gt('depth', 0) // Get all replies (depth > 0)
+      .order('created_at', { ascending: true });
+
+    if (allCommentsError) {
+      console.error('All comments fetch error:', allCommentsError);
+      return res.status(500).json({ error: 'Failed to fetch all comments' });
     }
 
+    console.log('Total replies fetched:', allComments?.length || 0);
+
+    // Create a map of comments by their IDs for quick lookup
+    const commentsById = new Map();
+    [...topLevelComments, ...(allComments || [])].forEach(comment => {
+      commentsById.set(comment.id, { ...comment, replies: [] });
+    });
+
     // Get user info for all unique user_ids
-    const userIds = [...new Set([...topLevelComments, ...replies].map((c) => c.user_id))];
+    const userIds = [...new Set([...topLevelComments, ...(allComments || [])].map((c) => c.user_id))];
+    console.log('Fetching user info for', userIds.length, 'users');
     const users = await getUsersInfo(userIds);
 
-    // Build threaded structure
-    const threadedComments = topLevelComments.map((comment) => ({
-      ...comment,
-      user: users[comment.user_id],
-      replies: replies
-        .filter((r) => r.parent_id === comment.id)
-        .map((r) => ({
-          ...r,
-          user: users[r.user_id],
-          replies: replies
-            .filter((r2) => r2.parent_id === r.id)
-            .map((r2) => ({
-              ...r2,
-              user: users[r2.user_id],
-              replies: replies
-                .filter((r3) => r3.parent_id === r2.id)
-                .map((r3) => ({
-                  ...r3,
-                  user: users[r3.user_id],
-                  replies: [], // Depth 3 has no replies
-                })),
-            })),
-        })),
-    }));
+    // Build the tree structure by connecting parents to children
+    (allComments || []).forEach(comment => {
+      if (comment.parent_id && commentsById.has(comment.parent_id)) {
+        const parent = commentsById.get(comment.parent_id);
+        const child = commentsById.get(comment.id);
+        if (parent && child) {
+          parent.replies.push(child);
+        }
+      }
+    });
 
+    // Get only the top-level comments with their nested replies
+    const threadedComments = topLevelComments.map(topComment => {
+      const commentWithReplies = commentsById.get(topComment.id);
+      
+      // Add user info recursively
+      const addUserInfo = (comment: any): any => {
+        return {
+          ...comment,
+          user: users[comment.user_id],
+          replies: comment.replies.map((reply: any) => addUserInfo(reply))
+        };
+      };
+      
+      return addUserInfo(commentWithReplies);
+    });
+
+    // Log the structure for debugging
+    const countReplies = (comments: any[]): number => {
+      let count = 0;
+      comments.forEach(comment => {
+        count += comment.replies.length;
+        count += countReplies(comment.replies);
+      });
+      return count;
+    };
+    
+    console.log('Threaded structure built:', {
+      topLevelComments: threadedComments.length,
+      totalReplies: countReplies(threadedComments),
+      depths: {
+        depth0: threadedComments.length,
+        depth1: threadedComments.reduce((sum, c) => sum + c.replies.length, 0),
+        depth2: threadedComments.reduce((sum, c) => 
+          sum + c.replies.reduce((s: number, r: any) => s + r.replies.length, 0), 0),
+        depth3: threadedComments.reduce((sum, c) => 
+          sum + c.replies.reduce((s: number, r: any) => 
+            s + r.replies.reduce((s2: number, r2: any) => s2 + r2.replies.length, 0), 0), 0)
+      }
+    });
+
+    // Get count of top-level comments for pagination
     const { count, error: countError } = await supabase
       .from('comments')
       .select('*', { count: 'exact', head: true })
@@ -188,7 +220,7 @@ router.get('/:newId/comments', async (req: Request, res: Response) => {
       return res.status(500).json({ error: 'Failed to get comments count' });
     }
 
-    console.log('Fetched comments:', threadedComments.length);
+    console.log('Returning comments response with', threadedComments.length, 'top-level comments');
     res.json({
       comments: threadedComments,
       hasMore: topLevelComments.length === limit,
@@ -200,14 +232,71 @@ router.get('/:newId/comments', async (req: Request, res: Response) => {
   }
 });
 
-// Create a comment
+// Also add this helper function to ensure user exists in public.users table before creating comments
+const ensureUserInPublicTable = async (userId: string, userEmail: string) => {
+  try {
+    // Check if user exists in public.users
+    const { data: userExists } = await supabase
+      .from('users')
+      .select('id')
+      .eq('id', userId)
+      .single();
+      
+    if (!userExists) {
+      console.log('User not found in public.users table, creating entry...');
+      
+      // Get user info from auth.users
+      const { data: { user: authUser }, error: authError } = await supabase.auth.admin.getUserById(userId);
+      
+      if (authError || !authUser) {
+        console.error('Failed to get auth user:', authError);
+        return false;
+      }
+
+      // Create user in public.users table with required fields
+      const { error: createError } = await supabase
+        .from('users')
+        .insert({
+          id: userId,
+          email: authUser.email || userEmail || 'unknown@example.com',
+          full_name: authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'Anonymous',
+          full_address: authUser.user_metadata?.full_address || 'Not specified',
+          latitude: authUser.user_metadata?.latitude || 0,
+          longitude: authUser.user_metadata?.longitude || 0,
+          email_verified: authUser.email_confirmed_at ? true : false,
+          profile_picture: authUser.user_metadata?.profile_picture || null
+        });
+
+      if (createError) {
+        console.error('Failed to create user in public.users:', createError);
+        return false;
+      }
+      
+      console.log('User created in public.users table');
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error ensuring user in public table:', error);
+    return false;
+  }
+};
+
+// Update the CREATE comment route to ensure user exists in public.users
 router.post('/:newId/comments', authenticate, comprehensiveValidation, autoInvalidateCache(req => req.user.id), async (req: Request, res: Response) => {
   try {
     const { newId } = req.params;
     const userId = (req as any).user.id;
+    const userEmail = (req as any).user.email;
     const { content, parentId } = req.body;
 
     console.log('Creating comment for post new_id:', newId, 'by user:', userId, 'parentId:', parentId);
+
+    // Ensure user exists in public.users table (to avoid foreign key constraint issues)
+    const userExists = await ensureUserInPublicTable(userId, userEmail);
+    if (!userExists) {
+      return res.status(500).json({ error: 'Failed to sync user data. Please try logging out and back in.' });
+    }
 
     if (!content || !content.trim()) {
       console.log('Missing or empty content');
@@ -249,12 +338,14 @@ router.post('/:newId/comments', authenticate, comprehensiveValidation, autoInval
 
       if (parentComment.depth >= 3) {
         console.log('Maximum reply depth reached for parent:', parentId);
-        return res.status(400).json({ error: 'Maximum reply depth reached' });
+        return res.status(400).json({ error: 'Maximum reply depth reached (max 4 levels)' });
       }
 
       depth = parentComment.depth + 1;
       validatedParentId = parentId;
       parentUserId = parentComment.user_id;
+      
+      console.log('Creating reply at depth:', depth);
     }
 
     // Create the comment
@@ -273,9 +364,18 @@ router.post('/:newId/comments', authenticate, comprehensiveValidation, autoInval
 
     if (commentError) {
       console.error('Comment creation error:', commentError);
+      
+      // Check if it's a foreign key constraint error
+      if (commentError.message?.includes('violates foreign key constraint')) {
+        return res.status(500).json({ 
+          error: 'User account needs to be synced. Please try logging out and back in.' 
+        });
+      }
+      
       return res.status(500).json({ error: 'Failed to create comment' });
     }
 
+    // Rest of the notification logic remains the same...
     const { data: sourceUser, error: userError } = await supabase
       .from('users')
       .select('full_name')
@@ -300,7 +400,6 @@ router.post('/:newId/comments', authenticate, comprehensiveValidation, autoInval
         if (postNotificationError) {
           console.warn('Failed to create comment notification:', postNotificationError);
         } else {
-          // Invalidate notification cache for post owner
           invalidateNotificationCache(post.user_id);
         }
       }
@@ -322,7 +421,6 @@ router.post('/:newId/comments', authenticate, comprehensiveValidation, autoInval
         if (replyNotificationError) {
           console.warn('Failed to create reply notification:', replyNotificationError);
         } else {
-          // Invalidate notification cache for parent comment owner
           invalidateNotificationCache(parentUserId);
         }
       }
@@ -335,7 +433,7 @@ router.post('/:newId/comments', authenticate, comprehensiveValidation, autoInval
       user: userInfo,
     };
 
-    console.log('Comment created successfully:', comment.id);
+    console.log('Comment created successfully:', comment.id, 'at depth:', depth);
     res.status(201).json(commentWithUser);
   } catch (error) {
     console.error('Server error:', error);

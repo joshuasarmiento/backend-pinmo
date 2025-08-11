@@ -22,7 +22,6 @@ export const safeGetCache = (key: string) => {
 export const safeSetCache = (key: string, value: any, ttl?: number) => {
   try {
     cache.set(key, value, ttl || 60);
-    console.log('Cache set for key:', key);
   } catch (error) {
     console.warn('Cache set error for key:', key, error);
   }
@@ -48,7 +47,6 @@ export const invalidateNotificationCache = (userId: string) => {
     const userKeys = keys.filter(key => key.startsWith(`notifications:${userId}:`));
     
     userKeys.forEach(key => safeDeleteCache(key));
-    console.log(`Invalidated ${userKeys.length} notification cache keys for user:`, userId);
   } catch (error) {
     console.error('Error invalidating notification cache for user:', userId, error);
   }
@@ -61,7 +59,6 @@ export const invalidatePostsCache = () => {
     const postKeys = keys.filter(key => key.startsWith('posts:'));
     
     postKeys.forEach(key => safeDeleteCache(key));
-    console.log(`Invalidated ${postKeys.length} posts cache keys`);
   } catch (error) {
     console.error('Error invalidating posts cache:', error);
   }
@@ -79,7 +76,6 @@ export const invalidateUserPostsCache = (userId: string) => {
     );
     
     userPostKeys.forEach(key => safeDeleteCache(key));
-    console.log(`Invalidated ${userPostKeys.length} user posts cache keys for user:`, userId);
   } catch (error) {
     console.error('Error invalidating user posts cache for user:', userId, error);
   }
@@ -96,7 +92,6 @@ export const invalidateSinglePostCache = (postNewId: string) => {
     );
     
     singlePostKeys.forEach(key => safeDeleteCache(key));
-    console.log(`Invalidated ${singlePostKeys.length} cache keys for post:`, postNewId);
   } catch (error) {
     console.error('Error invalidating single post cache for post:', postNewId, error);
   }
@@ -112,7 +107,6 @@ export const invalidateCommentsCache = (postNewId: string) => {
     );
     
     commentKeys.forEach(key => safeDeleteCache(key));
-    console.log(`Invalidated ${commentKeys.length} comments cache keys for post:`, postNewId);
   } catch (error) {
     console.error('Error invalidating comments cache for post:', postNewId, error);
   }
@@ -180,7 +174,6 @@ export const getCacheStats = () => {
 export const clearAllCache = () => {
   try {
     cache.flushAll();
-    console.log('All cache cleared');
   } catch (error) {
     console.error('Error clearing all cache:', error);
   }
