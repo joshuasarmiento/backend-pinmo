@@ -57,7 +57,6 @@ export async function analyzeImageFast(imageUrl: string): Promise<ImageAnalysisD
     try {
       textAnalysis = await withTimeout(analyzeImageText(imageUrl), 3000);
     } catch (timeoutError) {
-      console.warn(`OCR timeout for ${imageUrl}, using skin analysis only`);
       textAnalysis = {
         hasExplicitText: false,
         confidence: 0,

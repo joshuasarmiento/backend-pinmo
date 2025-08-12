@@ -136,6 +136,10 @@ router.post('/register', async (req: Request, res: Response) => {
   }
 });
 
+const url = process.env.NODE_ENV === 'production' 
+  ? 'https://pin-oy.vercel.apps' 
+  : 'http://localhost:5173'
+
 // Forgot Password endpoint
 router.post('/forgot-password', async (req: Request, res: Response) => {
   try {
@@ -147,48 +151,30 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Email is required' });
     }
 
-    // Check if user exists
-    const { data: user } = await supabase
-      .from('users')
-      .select('id')
-      .eq('email', email)
-      .single();
-
-    if (!user) {
-      console.log('User not found for email:', email);
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    // Generate reset token
-    const resetToken = uuidv4();
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour expiry
-
-    // Store reset token in users table
-    const { error: updateError } = await supabase
-      .from('users')
-      .update({
-        reset_password_token: resetToken,
-        reset_password_expires: expiresAt.toISOString(),
-        updated_at: new Date().toISOString()
-      })
-      .eq('email', email);
-
-    if (updateError) {
-      console.error('Failed to store reset token:', updateError);
-      return res.status(500).json({ error: 'Failed to initiate password reset' });
-    }
+    console.log('Attempting to send reset email for:', email);
 
     // Send password reset email via Supabase Auth
+    // The redirect URL should handle the Supabase auth flow
     const { error: authError } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`
+      redirectTo: `${url}/reset-password`
     });
 
     if (authError) {
       console.error('Supabase reset password email error:', authError);
+      
+      // Handle specific Supabase Auth errors
+      if (authError.message.includes('User not found') || 
+          authError.message.includes('user_not_found') ||
+          authError.message.includes('Invalid email')) {
+        return res.status(404).json({ error: 'No account found with this email address' });
+      }
+      
       return res.status(500).json({ error: 'Failed to send reset email' });
     }
 
+    console.log('Reset email sent successfully for:', email);
     res.status(200).json({ message: 'Password reset email sent' });
+    
   } catch (error) {
     console.error('Forgot password error:', error);
     res.status(500).json({ error: 'Failed to initiate password reset' });

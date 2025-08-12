@@ -54,8 +54,6 @@ router.get('/notifications', authenticate, async (req: Request, res: Response) =
     const userId = (req as any).user.id;
     const { page = '1', limit = '10' } = req.query;
 
-    console.log('Fetching notifications for user:', userId);
-
     const pageNum = parseInt(page as string);
     const limitNum = parseInt(limit as string);
     const offset = (pageNum - 1) * limitNum;
@@ -125,7 +123,6 @@ router.get('/notifications', authenticate, async (req: Request, res: Response) =
       return res.status(500).json({ error: 'Failed to get notifications count' });
     }
 
-    console.log('Notifications fetched:', notificationsWithUsers.length);
 
     const result = {
       notifications: notificationsWithUsers,
@@ -135,7 +132,6 @@ router.get('/notifications', authenticate, async (req: Request, res: Response) =
 
     // Cache the result for 1 minute
     safeSetCache(cacheKey, result, 60);
-    console.log('Cached notifications for user:', userId);
 
     res.json(result);
   } catch (error) {
@@ -149,12 +145,9 @@ router.get('/notifications/unread-count', authenticate, async (req: Request, res
   try {
     const userId = (req as any).user.id;
 
-    console.log('Getting unread notifications count for user:', userId);
-
     const cacheKey = `notifications:${userId}:unread-count`;
     const cached = safeGetCache(cacheKey);
     if (cached !== null && cached !== undefined) {
-      console.log('Returning cached unread count for user:', userId);
       return res.json({ count: cached });
     }
 
@@ -173,8 +166,6 @@ router.get('/notifications/unread-count', authenticate, async (req: Request, res
 
     // Cache the result for 30 seconds (shorter TTL for real-time feel)
     safeSetCache(cacheKey, unreadCount, 30);
-    console.log('Unread notifications count for user:', userId, '=', unreadCount);
-
     res.json({ count: unreadCount });
   } catch (error) {
     console.error('Server error:', error);
@@ -523,7 +514,7 @@ router.get('/', async (req: Request, res: Response) => {
           explicitContentAnalysis = await analyzeImagesBatch(post.image_url);
 
           if (explicitContentAnalysis.hasExplicitContent) {
-            console.log(`⚠️  Explicit content detected in post ${post.id} - Skin: ${explicitContentAnalysis.confidence}, Text: ${explicitContentAnalysis.textConfidence}, Categories: ${explicitContentAnalysis.detectedCategories.join(', ')}`);
+            // console.log(`⚠️  Explicit content detected in post ${post.id} - Skin: ${explicitContentAnalysis.confidence}, Text: ${explicitContentAnalysis.textConfidence}, Categories: ${explicitContentAnalysis.detectedCategories.join(', ')}`);
           }
 
         } catch (analysisError) {
@@ -594,7 +585,7 @@ router.get('/:newId', async (req: Request, res: Response) => {
         explicitContentAnalysis = await analyzeImagesBatch(post.image_url);
 
         if (explicitContentAnalysis.hasExplicitContent) {
-          console.log(`⚠️  Explicit content detected in post ${post.id} - Skin: ${explicitContentAnalysis.confidence}, Text: ${explicitContentAnalysis.textConfidence}, Categories: ${explicitContentAnalysis.detectedCategories.join(', ')}`);
+          // console.log(`⚠️  Explicit content detected in post ${post.id} - Skin: ${explicitContentAnalysis.confidence}, Text: ${explicitContentAnalysis.textConfidence}, Categories: ${explicitContentAnalysis.detectedCategories.join(', ')}`);
         }
 
       } catch (analysisError) {

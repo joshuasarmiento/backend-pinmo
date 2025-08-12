@@ -9,10 +9,25 @@ const router = Router();
 // Add like
 router.post('/:id/likes', authenticate, syncUserToPublicTable, autoInvalidateCache(req => req.user.id), async (req: Request, res: Response) => {
   try {
-const postId = req.params.id;
+    const postId = req.params.id;
     const userId = (req as any).user.id;
 
     console.log('Adding like to post:', postId, 'by user:', userId);
+
+    // FIRST: Verify the post exists before proceeding
+    const { data: post, error: postFetchError } = await supabase
+      .from('posts')
+      .select('id, user_id, new_id, likes')
+      .eq('id', postId)
+      .single();
+
+    if (postFetchError || !post) {
+      console.error('Post not found:', postId, postFetchError);
+      return res.status(404).json({ 
+        error: 'Post not found',
+        details: 'The post you are trying to like does not exist or has been deleted'
+      });
+    }
 
     // IMPORTANT: Ensure user exists in public.users table
     const { data: userExists } = await supabase
@@ -54,7 +69,6 @@ const postId = req.params.id;
       console.log('User created in public.users table');
     }
 
-    // Now proceed with the like operation...
     // Check if user already liked this post
     const { data: existingLike } = await supabase
       .from('post_likes')
@@ -90,27 +104,10 @@ const postId = req.params.id;
 
     console.log('Like record created:', likeData);
 
-    // Get current post data
-    const { data: post, error: fetchError } = await supabase
-      .from('posts')
-      .select('likes, user_id, new_id')
-      .eq('id', postId)
-      .single();
-
-    if (fetchError) {
-      console.error('Fetch error:', fetchError);
-      // Rollback the like
-      await supabase
-        .from('post_likes')
-        .delete()
-        .eq('post_id', postId)
-        .eq('user_id', userId);
-      return res.status(500).json({ error: 'Failed to update likes count' });
-    }
-
+    // Calculate new likes count
     const newLikesCount = (post.likes || 0) + 1;
 
-    // Update likes count
+    // Update likes count (we already have the post data, so we know it exists)
     const { data: updatedPost, error: incrementError } = await supabase
       .from('posts')
       .update({ likes: newLikesCount })
