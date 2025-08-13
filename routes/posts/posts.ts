@@ -48,6 +48,107 @@ const getUserInfo = async (userId: string) => {
   };
 };
 
+interface Post {
+  type: string;
+}
+
+interface PostLike {
+  posts: Post | null;
+}
+
+// Utility function to calculate distance using Haversine formula
+const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+  const toRad = (value: number) => (value * Math.PI) / 180;
+  const R = 6371; // Earth's radius in km
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c; // Distance in km
+};
+
+const getRecommendedPosts = async (
+  userId: string | null,
+  userLat: number | null,
+  userLng: number | null,
+  page: number,
+  limit: number,
+  search?: string,
+  category?: string
+) => {
+  console.log('🎯 Simple recommendations for:', userId ? 'authenticated' : 'anonymous', 'user');
+
+  // Fetch a larger pool for better variety and pagination
+  const fetchLimit = Math.max(limit * 6, 100); // Much larger pool
+  const offset = (page - 1) * limit;
+  
+  let query = supabase
+    .from('posts')
+    .select(`
+      id, type, description, lat, lng, location, timestamp, image_url, link, new_id, 
+      resolution_status, likes, views, emoji, user_id, updated_at, custom_pin
+    `)
+    .eq('resolution_status', 'active');
+
+  // Apply filters
+  if (search) {
+    query = query.or(`description.ilike.%${search}%,location.ilike.%${search}%,type.ilike.%${search}%`);
+  }
+  if (category) {
+    query = query.eq('type', category);
+  }
+
+  // Mix of recent and older posts for variety
+  const { data: posts, error } = await query
+    .order('timestamp', { ascending: false })
+    .range(0, fetchLimit - 1);
+
+  if (error || !posts) {
+    throw new Error('Failed to fetch posts for recommendation');
+  }
+
+  // Create a deterministic but varied seed based on user and page
+  const seedBase = userId ? parseInt(userId.slice(-6), 16) : 12345;
+  const pageSeed = seedBase + (page * 1000);
+
+  // Simple scoring with deterministic randomness
+  const scoredPosts = posts.map((post, index) => {
+    let score = 0;
+
+    // 1. Recency (0-100 points) - newer posts get higher scores
+    const hoursAgo = (Date.now() - new Date(post.timestamp).getTime()) / (1000 * 60 * 60);
+    score += Math.max(0, 100 - hoursAgo);
+
+    // 2. Engagement (likes and views)
+    score += (post.likes || 0) * 5 + (post.views || 0);
+
+    // 3. Location proximity (if user location available)
+    if (userLat && userLng && post.lat && post.lng) {
+      const distance = getDistance(userLat, userLng, post.lat, post.lng);
+      if (distance < 50) { // Within 50km gets bonus
+        score += 50 - distance;
+      }
+    }
+
+    // 4. Deterministic "randomness" for consistent ordering per page
+    const postSeed = parseInt(post.id.toString().slice(-4)) || index;
+    const deterministicRandom = ((pageSeed + postSeed) % 100) / 100;
+    score += deterministicRandom * 50;
+
+    return { ...post, score };
+  });
+
+  // Sort by score, then slice for pagination
+  const sortedPosts = scoredPosts.sort((a, b) => b.score - a.score);
+  const paginatedPosts = sortedPosts.slice(offset, offset + limit);
+
+  console.log(`📊 Page ${page}: Returned ${paginatedPosts.length} of ${sortedPosts.length} posts`);
+  return paginatedPosts;
+};
+
 // Get notifications for a user
 router.get('/notifications', authenticate, async (req: Request, res: Response) => {
   try {
@@ -357,131 +458,243 @@ router.post(
   }
 });
 
-// Replace the existing GET posts route with this updated version:
+// Updated GET posts route with recommendation support
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const { dateFilter, sortKey = 'timestamp', sortOrder = 'desc', userId, page = '1', limit = '10', exclude } = req.query;
+    const { dateFilter, sortKey = 'timestamp', sortOrder = 'desc', userId, page = '1', limit = '12', exclude, search, category, recommend } = req.query;
+
+    // Convert query params to strings safely
+    const searchParam = typeof search === 'string' ? search.trim() : '';
+    const categoryParam = typeof category === 'string' ? category.trim() : '';
+    const recommendParam = recommend === 'true';
+
+    // Add this debugging
+    console.log('🔍 Request details:', {
+      hasAuthHeader: !!req.headers.authorization,
+      userFromAuth: (req as any).user?.id || 'none',
+      recommendParam,
+      searchParam,
+      categoryParam
+    });
 
     // Generate consistent cache key
-    const cacheKey = `posts:filter-${dateFilter || 'all'}:sort-${sortKey}:${sortOrder}:user-${userId || 'all'}:page-${page}:limit-${limit}:exclude-${exclude || 'none'}`;
-    
+    const cacheKey = `posts:filter-${dateFilter || 'all'}:sort-${sortKey}:${sortOrder}:user-${userId || 'all'}:page-${page}:limit-${limit}:exclude-${exclude || 'none'}:recommend-${recommendParam}`;
+
     const cached = safeGetCache(cacheKey);
     if (cached) {
       console.log('Returning cached posts for key:', cacheKey);
       return res.json(cached);
     }
 
-    // Build Supabase query
-    let query = supabase
-      .from('posts')
-      .select(`
-        id, type, description, lat, lng, location, timestamp, image_url, link, new_id, 
-        resolution_status, likes, views, emoji, user_id, updated_at, custom_pin, 
-        user:users(id, email, full_name, profile_picture, email_verified)
-      `)
-      .eq('resolution_status', 'active');
+    let postsWithUserAndLikes: any[];
 
-    // Apply filters
-    if (userId) {
-      query = query.eq('user_id', userId);
-    }
+    if (recommendParam) {
+      // Get user ID (from middleware or token)
+      let authUserId = (req as any).user?.id || null;
 
-    if (exclude) {
-      query = query.neq('id', exclude);
-    }
+      // Get user location if authenticated
+      let userLat: number | null = null;
+      let userLng: number | null = null;
 
-    if (dateFilter && dateFilter !== 'all') {
-      const now = new Date();
-      let cutoffDate: Date;
-      
-      switch (dateFilter) {
-        case '24h':
-          cutoffDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-          break;
-        case '3d':
-          cutoffDate = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
-          break;
-        case '7d':
-          cutoffDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-          break;
-        case '30d':
-          cutoffDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-          break;
-        default:
-          cutoffDate = new Date(0);
-      }
-      
-      query = query.gte('timestamp', cutoffDate.toISOString());
-    }
-
-    // Apply sorting
-    const ascending = sortOrder === 'asc';
-    query = query.order(sortKey as string, { ascending });
-
-    // Apply pagination
-    const pageNum = parseInt(page as string, 10);
-    const limitNum = parseInt(limit as string, 10);
-    query = query.range((pageNum - 1) * limitNum, pageNum * limitNum - 1);
-
-    // Execute query
-    const { data: posts, error } = await query;
-
-    if (error) {
-      console.error('Database error:', error);
-      return res.status(500).json({ error: 'Failed to fetch posts' });
-    }
-
-    // Process posts with user info and liked status
-    const authUserId = (req as any).user?.id;
-    let postsWithUserAndLikes = await Promise.all(posts.map(async (post: any) => {
-      // Handle user information - fallback to auth if users table join failed
-      let postWithUser = post;
-      
-      // Extract user data from join result (it might be an array or null)
-      let userData = null;
-      if (post.user) {
-        if (Array.isArray(post.user) && post.user.length > 0) {
-          userData = post.user[0]; // Take first user if it's an array
-        } else if (!Array.isArray(post.user)) {
-          userData = post.user; // Use as-is if it's an object
+      if (authUserId) {
+        const { data: user } = await supabase
+          .from('users')
+          .select('lat, lng')
+          .eq('id', authUserId)
+          .single();
+        
+        if (user) {
+          userLat = user.lat;
+          userLng = user.lng;
         }
       }
-      
-      // Check if we have valid user data with full_name
-      if (!userData || !userData.full_name) {
-        if (post.user_id) {
+
+      // Fetch recommended posts
+      postsWithUserAndLikes = await getRecommendedPosts(
+        authUserId,
+        userLat,
+        userLng,
+        parseInt(page as string, 10),
+        parseInt(limit as string, 10),
+        searchParam,
+        categoryParam
+      );
+
+      // Add explicit content analysis
+      postsWithUserAndLikes = await Promise.all(
+        postsWithUserAndLikes.map(async (post: any) => {
+          // Get user information
           const userInfo = await getUserInfo(post.user_id);
+
+          // Check if current user liked this post
+          let liked = false;
+          if (authUserId) {
+            try {
+              const { data: like } = await supabase
+                .from('post_likes')
+                .select('id')
+                .eq('post_id', post.id)
+                .eq('user_id', authUserId)
+                .single();
+              liked = !!like;
+            } catch (likeError) {
+              // Like doesn't exist, keep liked as false
+            }
+          }
+          
+          // Analyze images for explicit content
+          let explicitContentAnalysis: ExplicitContentAnalysis = {
+            hasExplicitContent: false,
+            confidence: 0,
+            details: [],
+            hasExplicitText: false,
+            textConfidence: 0,
+            detectedCategories: []
+          };
+
+          if (post.image_url && Array.isArray(post.image_url) && post.image_url.length > 0) {
+            try {
+              explicitContentAnalysis = await analyzeImagesBatch(post.image_url);
+            } catch (analysisError) {
+              console.warn(`Failed to analyze images for post ${post.id}:`, analysisError);
+            }
+          }
+
+          return {
+            ...post,
+            user: userInfo,
+            liked,
+            likes: post.likes || 0,
+            views: post.views || 0,
+            explicit_content: explicitContentAnalysis
+          };
+        })
+      );
+    } else {
+      console.log('📋 Using regular (non-recommended) posts');
+
+      // Existing query logic
+      let query = supabase
+        .from('posts')
+        .select(`
+          id, type, description, lat, lng, location, timestamp, image_url, link, new_id, 
+          resolution_status, likes, views, emoji, user_id, updated_at, custom_pin, 
+          user:users(id, email, full_name, profile_picture, email_verified)
+        `)
+        .eq('resolution_status', 'active');
+
+      // Apply filters
+      if (userId) {
+        query = query.eq('user_id', userId);
+      }
+
+      if (exclude) {
+        query = query.neq('id', exclude);
+      }
+
+      if (searchParam) {
+        query = query.or(`description.ilike.%${searchParam}%,location.ilike.%${searchParam}%,type.ilike.%${searchParam}%`);
+      }
+
+      if (categoryParam) {
+        query = query.eq('type', categoryParam);
+      }
+
+      if (dateFilter && dateFilter !== 'all') {
+        const now = new Date();
+        let cutoffDate: Date;
+        
+        switch (dateFilter) {
+          case '24h':
+            cutoffDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            break;
+          case '3d':
+            cutoffDate = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+            break;
+          case '7d':
+            cutoffDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            break;
+          case '30d':
+            cutoffDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+            break;
+          default:
+            cutoffDate = new Date(0);
+        }
+        
+        query = query.gte('timestamp', cutoffDate.toISOString());
+      }
+
+      // Apply sorting
+      const ascending = sortOrder === 'asc';
+      query = query.order(sortKey as string, { ascending });
+
+      // Apply pagination
+      const pageNum = parseInt(page as string, 10);
+      const limitNum = parseInt(limit as string, 10);
+      query = query.range((pageNum - 1) * limitNum, pageNum * limitNum - 1);
+
+      // Execute query
+      const { data: posts, error } = await query;
+
+      if (error) {
+        console.error('Database error:', error);
+        return res.status(500).json({ error: 'Failed to fetch posts' });
+      }
+
+      // Process posts with user info and liked status
+      const authUserId = (req as any).user?.id;
+      postsWithUserAndLikes = await Promise.all(posts.map(async (post: any) => {
+        let postWithUser = post;
+        
+        let userData = null;
+        if (post.user) {
+          if (Array.isArray(post.user) && post.user.length > 0) {
+            userData = post.user[0];
+          } else if (!Array.isArray(post.user)) {
+            userData = post.user;
+          }
+        }
+        
+        if (!userData || !userData.full_name) {
+          if (post.user_id) {
+            const userInfo = await getUserInfo(post.user_id);
+            postWithUser = {
+              ...post,
+              user: userInfo
+            };
+          }
+        } else {
           postWithUser = {
             ...post,
-            user: userInfo
+            user: userData
           };
         }
-      } else {
-        // Use the valid joined user data
-        postWithUser = {
-          ...post,
-          user: userData
-        };
-      }
 
-      // Handle liked status for authenticated users
-      if (authUserId) {
-        try {
-          const { data: like } = await supabase
-            .from('post_likes')
-            .select('id')
-            .eq('post_id', post.id)
-            .eq('user_id', authUserId)
-            .single();
-          
-          postWithUser = {
-            ...postWithUser,
-            liked: !!like,
-            likes: post.likes || 0,
-            views: post.views || 0
-          };
-        } catch (likeError) {
-          console.warn(`Failed to fetch like status for post ${post.id}:`, likeError);
+        if (authUserId) {
+          try {
+            const { data: like } = await supabase
+              .from('post_likes')
+              .select('id')
+              .eq('post_id', post.id)
+              .eq('user_id', authUserId)
+              .single();
+            
+            postWithUser = {
+              ...postWithUser,
+              liked: !!like,
+              likes: post.likes || 0,
+              views: post.views || 0
+            };
+          } catch (likeError) {
+            console.warn(`Failed to fetch like status for post ${post.id}:`, likeError);
+            postWithUser = {
+              ...postWithUser,
+              liked: false,
+              likes: post.likes || 0,
+              views: post.views || 0
+            };
+          }
+        } else {
           postWithUser = {
             ...postWithUser,
             liked: false,
@@ -489,44 +702,30 @@ router.get('/', async (req: Request, res: Response) => {
             views: post.views || 0
           };
         }
-      } else {
-        postWithUser = {
-          ...postWithUser,
-          liked: false,
-          likes: post.likes || 0,
-          views: post.views || 0
+
+        let explicitContentAnalysis: ExplicitContentAnalysis = {
+          hasExplicitContent: false,
+          confidence: 0,
+          details: [],
+          hasExplicitText: false,
+          textConfidence: 0,
+          detectedCategories: []
         };
-      }
 
-      // Analyze images for explicit content
-      let explicitContentAnalysis: ExplicitContentAnalysis = {
-        hasExplicitContent: false,
-        confidence: 0,
-        details: [],
-        hasExplicitText: false,
-        textConfidence: 0,
-        detectedCategories: []
-      };
-
-      if (post.image_url && Array.isArray(post.image_url) && post.image_url.length > 0) {
-        
-        try {
-          explicitContentAnalysis = await analyzeImagesBatch(post.image_url);
-
-          if (explicitContentAnalysis.hasExplicitContent) {
-            // console.log(`⚠️  Explicit content detected in post ${post.id} - Skin: ${explicitContentAnalysis.confidence}, Text: ${explicitContentAnalysis.textConfidence}, Categories: ${explicitContentAnalysis.detectedCategories.join(', ')}`);
+        if (post.image_url && Array.isArray(post.image_url) && post.image_url.length > 0) {
+          try {
+            explicitContentAnalysis = await analyzeImagesBatch(post.image_url);
+          } catch (analysisError) {
+            console.warn(`Failed to analyze images for post ${post.id}:`, analysisError);
           }
-
-        } catch (analysisError) {
-          console.warn(`Failed to analyze images for post ${post.id}:`, analysisError);
         }
-      }
 
-      return {
-        ...postWithUser,
-        explicit_content: explicitContentAnalysis
-      };
-    }));
+        return {
+          ...postWithUser,
+          explicit_content: explicitContentAnalysis
+        };
+      }));
+    }
 
     // Cache the results (1-minute TTL)
     safeSetCache(cacheKey, postsWithUserAndLikes, 60);
