@@ -18,6 +18,7 @@ import {
   invalidateSinglePostCache 
 } from '../../utils/cache';
 import { analyzeImagesBatch, type ExplicitContentAnalysis, type ImageAnalysisDetail } from '../../middleware/combinedImageAnalysis';
+import { optionalAuthenticate } from '../../middleware/optionalAuth';
 
 const router = Router();
 
@@ -70,6 +71,7 @@ const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number): nu
   return R * c; // Distance in km
 };
 
+// Alternative: Simple approach with true randomness
 const getRecommendedPosts = async (
   userId: string | null,
   userLat: number | null,
@@ -81,8 +83,8 @@ const getRecommendedPosts = async (
 ) => {
   console.log('🎯 Simple recommendations for:', userId ? 'authenticated' : 'anonymous', 'user');
 
-  // Fetch a larger pool for better variety and pagination
-  const fetchLimit = Math.max(limit * 6, 100); // Much larger pool
+  // Fetch a much larger pool for better variety
+  const fetchLimit = Math.max(limit * 10, 200); // Even larger pool
   const offset = (page - 1) * limit;
   
   let query = supabase
@@ -101,7 +103,6 @@ const getRecommendedPosts = async (
     query = query.eq('type', category);
   }
 
-  // Mix of recent and older posts for variety
   const { data: posts, error } = await query
     .order('timestamp', { ascending: false })
     .range(0, fetchLimit - 1);
@@ -110,43 +111,41 @@ const getRecommendedPosts = async (
     throw new Error('Failed to fetch posts for recommendation');
   }
 
-  // Create a deterministic but varied seed based on user and page
-  const seedBase = userId ? parseInt(userId.slice(-6), 16) : 12345;
-  const pageSeed = seedBase + (page * 1000);
-
-  // Simple scoring with deterministic randomness
+  // Score and shuffle for variety
   const scoredPosts = posts.map((post, index) => {
     let score = 0;
 
-    // 1. Recency (0-100 points) - newer posts get higher scores
+    // Recency bonus
     const hoursAgo = (Date.now() - new Date(post.timestamp).getTime()) / (1000 * 60 * 60);
     score += Math.max(0, 100 - hoursAgo);
 
-    // 2. Engagement (likes and views)
+    // Engagement bonus
     score += (post.likes || 0) * 5 + (post.views || 0);
 
-    // 3. Location proximity (if user location available)
+    // Location bonus
     if (userLat && userLng && post.lat && post.lng) {
       const distance = getDistance(userLat, userLng, post.lat, post.lng);
-      if (distance < 50) { // Within 50km gets bonus
+      if (distance < 50) {
         score += 50 - distance;
       }
     }
 
-    // 4. Deterministic "randomness" for consistent ordering per page
-    const postSeed = parseInt(post.id.toString().slice(-4)) || index;
-    const deterministicRandom = ((pageSeed + postSeed) % 100) / 100;
-    score += deterministicRandom * 50;
+    // Strong randomness for variety
+    score += Math.random() * 100;
 
     return { ...post, score };
   });
 
-  // Sort by score, then slice for pagination
+  // Sort by score and paginate
   const sortedPosts = scoredPosts.sort((a, b) => b.score - a.score);
-  const paginatedPosts = sortedPosts.slice(offset, offset + limit);
+  
+  // Take a larger slice for more variety, then shuffle and slice again
+  const candidatePool = sortedPosts.slice(offset, offset + (limit * 3));
+  const shuffled = candidatePool.sort(() => Math.random() - 0.5);
+  const finalPosts = shuffled.slice(0, limit);
 
-  console.log(`📊 Page ${page}: Returned ${paginatedPosts.length} of ${sortedPosts.length} posts`);
-  return paginatedPosts;
+  console.log(`📊 Page ${page}: Returned ${finalPosts.length} posts from ${posts.length} total`);
+  return finalPosts;
 };
 
 // Get notifications for a user
@@ -459,7 +458,7 @@ router.post(
 });
 
 // Updated GET posts route with recommendation support
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', optionalAuthenticate, async (req: Request, res: Response) => {
   try {
     const { dateFilter, sortKey = 'timestamp', sortOrder = 'desc', userId, page = '1', limit = '12', exclude, search, category, recommend } = req.query;
 
@@ -467,6 +466,8 @@ router.get('/', async (req: Request, res: Response) => {
     const searchParam = typeof search === 'string' ? search.trim() : '';
     const categoryParam = typeof category === 'string' ? category.trim() : '';
     const recommendParam = recommend === 'true';
+
+    const authUserId = (req as any).user?.id || null;
 
     // Add this debugging
     console.log('🔍 Request details:', {
@@ -478,7 +479,8 @@ router.get('/', async (req: Request, res: Response) => {
     });
 
     // Generate consistent cache key
-    const cacheKey = `posts:filter-${dateFilter || 'all'}:sort-${sortKey}:${sortOrder}:user-${userId || 'all'}:page-${page}:limit-${limit}:exclude-${exclude || 'none'}:recommend-${recommendParam}`;
+    // const cacheKey = `posts:filter-${dateFilter || 'all'}:sort-${sortKey}:${sortOrder}:user-${userId || 'all'}:page-${page}:limit-${limit}:exclude-${exclude || 'none'}:recommend-${recommendParam}`;
+    const cacheKey = `posts:filter-${dateFilter || 'all'}:sort-${sortKey}:${sortOrder}:user-${userId || 'all'}:page-${page}:limit-${limit}:exclude-${exclude || 'none'}:recommend-${recommendParam}:auth-${authUserId || 'anon'}`;
 
     const cached = safeGetCache(cacheKey);
     if (cached) {

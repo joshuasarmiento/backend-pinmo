@@ -5,7 +5,7 @@ import {
   sanitizeForDatabase
 } from '../../middleware/advancedPostValidation';
 import { authenticate } from '../../middleware/auth';
-import { invalidateNotificationCache, autoInvalidateCache } from '../../utils/cache';
+import { safeGetCache, safeSetCache, invalidateCommentCountCache, invalidateNotificationCache, autoInvalidateCache } from '../../utils/cache';
 
 const router = Router();
 
@@ -52,7 +52,16 @@ router.get('/:newId/comments/count', async (req: Request, res: Response) => {
   try {
     const { newId } = req.params;
 
-    console.log('Fetching comment count for post new_id:', newId);
+    // Create cache key
+    const cacheKey = `comment-count:${newId}`;
+
+    // Try to get from cache first
+    const cached = safeGetCache(cacheKey);
+    if (cached !== null && cached !== undefined) {
+      return res.json({ count: cached });
+    }
+
+    // console.log('Fetching comment count for post new_id:', newId);
 
     // Get the post's integer ID
     const { data: post, error: postError } = await supabase
@@ -80,8 +89,13 @@ router.get('/:newId/comments/count', async (req: Request, res: Response) => {
       return res.status(500).json({ error: 'Failed to get comment count' });
     }
 
-    console.log('Comment count for post', newId, ':', count);
-    res.json({ count: count || 0 });
+    const commentCount = count || 0;
+
+    // Cache the result for 2 minutes
+    safeSetCache(cacheKey, commentCount, 120);
+
+    // console.log('Comment count for post', newId, ':', commentCount);
+    res.json({ count: commentCount });
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({ error: 'Failed to fetch comment count' });
@@ -375,6 +389,8 @@ router.post('/:newId/comments', authenticate, comprehensiveValidation, autoInval
       return res.status(500).json({ error: 'Failed to create comment' });
     }
 
+    invalidateCommentCountCache(newId);
+
     // Rest of the notification logic remains the same...
     const { data: sourceUser, error: userError } = await supabase
       .from('users')
@@ -579,6 +595,9 @@ router.delete('/:newId/comments/:commentId', authenticate, async (req: Request, 
       console.error('Comment delete error:', deleteError);
       return res.status(500).json({ error: 'Failed to delete comment' });
     }
+
+    // ADD THIS LINE after successful comment deletion:
+    invalidateCommentCountCache(newId);
 
     // Soft delete replies (if not handled by ON DELETE CASCADE)
     const { error: repliesDeleteError } = await supabase

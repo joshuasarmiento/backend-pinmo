@@ -170,6 +170,21 @@ export const getCacheStats = () => {
   }
 };
 
+export const invalidateCommentCountCache = (postNewId: string) => {
+  try {
+    const keys = cache.keys();
+    const commentCountKeys = keys.filter(key => 
+      key === `comment-count:${postNewId}` ||
+      key.includes(`comment-count:${postNewId}`)
+    );
+    
+    commentCountKeys.forEach(key => safeDeleteCache(key));
+    console.log('Invalidated comment count cache for post:', postNewId);
+  } catch (error) {
+    console.error('Error invalidating comment count cache for post:', postNewId, error);
+  }
+};
+
 // Clear all cache
 export const clearAllCache = () => {
   try {
