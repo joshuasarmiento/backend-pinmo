@@ -71,7 +71,7 @@ const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number): nu
   return R * c; // Distance in km
 };
 
-// Alternative: Simple approach with true randomness
+// Fixed getRecommendedPosts function with proper pagination
 const getRecommendedPosts = async (
   userId: string | null,
   userLat: number | null,
@@ -83,9 +83,14 @@ const getRecommendedPosts = async (
 ) => {
   console.log('🎯 Simple recommendations for:', userId ? 'authenticated' : 'anonymous', 'user');
 
-  // Fetch a much larger pool for better variety
-  const fetchLimit = Math.max(limit * 10, 200); // Even larger pool
+  // Calculate proper pagination
   const offset = (page - 1) * limit;
+  
+  // For recommendations, we need a larger pool but with reasonable limits
+  // Fetch more than needed for scoring/filtering, but not infinite
+  const maxPoolSize = 1000; // Reasonable maximum
+  const poolMultiplier = Math.min(10, Math.max(3, Math.ceil(1000 / limit))); // 3-10x the limit
+  const fetchLimit = Math.min(maxPoolSize, limit * poolMultiplier);
   
   let query = supabase
     .from('posts')
@@ -111,40 +116,99 @@ const getRecommendedPosts = async (
     throw new Error('Failed to fetch posts for recommendation');
   }
 
-  // Score and shuffle for variety
-  const scoredPosts = posts.map((post, index) => {
+  // If we don't have enough posts for this page, return empty
+  const totalAvailable = posts.length;
+  if (offset >= totalAvailable) {
+    console.log(`📊 Page ${page}: No more posts available (offset ${offset} >= total ${totalAvailable})`);
+    return [];
+  }
+
+  // Create a Set to track seen post IDs and ensure uniqueness
+  const seenIds = new Set<string>();
+  
+  // Filter out duplicates first
+  const uniquePosts = posts.filter(post => {
+    if (seenIds.has(post.id)) {
+      console.warn(`Duplicate post found and filtered: ${post.id}`);
+      return false;
+    }
+    seenIds.add(post.id);
+    return true;
+  });
+
+  console.log(`📊 Filtered ${posts.length - uniquePosts.length} duplicates, working with ${uniquePosts.length} unique posts`);
+
+  // Score posts for recommendation
+  const scoredPosts = uniquePosts.map((post, index) => {
     let score = 0;
 
-    // Recency bonus
+    // Recency bonus (more weight to recent posts)
     const hoursAgo = (Date.now() - new Date(post.timestamp).getTime()) / (1000 * 60 * 60);
-    score += Math.max(0, 100 - hoursAgo);
+    score += Math.max(0, 100 - hoursAgo * 0.5); // Slower decay
 
     // Engagement bonus
-    score += (post.likes || 0) * 5 + (post.views || 0);
+    score += (post.likes || 0) * 10 + (post.views || 0) * 0.1;
 
-    // Location bonus
+    // Location bonus (if user has location)
     if (userLat && userLng && post.lat && post.lng) {
       const distance = getDistance(userLat, userLng, post.lat, post.lng);
-      if (distance < 50) {
-        score += 50 - distance;
+      if (distance < 100) { // Increased range
+        score += Math.max(0, 100 - distance);
       }
     }
 
-    // Strong randomness for variety
-    score += Math.random() * 100;
+    // Diversity bonus (prefer different post types)
+    const diversityBonus = Math.random() * 30; // Reduced randomness
+    score += diversityBonus;
 
-    return { ...post, score };
+    // Add small index penalty to avoid always getting the same recent posts
+    score -= index * 0.1;
+
+    return { ...post, score, originalIndex: index };
   });
 
-  // Sort by score and paginate
+  // Sort by score
   const sortedPosts = scoredPosts.sort((a, b) => b.score - a.score);
-  
-  // Take a larger slice for more variety, then shuffle and slice again
-  const candidatePool = sortedPosts.slice(offset, offset + (limit * 3));
-  const shuffled = candidatePool.sort(() => Math.random() - 0.5);
-  const finalPosts = shuffled.slice(0, limit);
 
-  console.log(`📊 Page ${page}: Returned ${finalPosts.length} posts from ${posts.length} total`);
+  // Apply proper pagination - don't go beyond available posts
+  const availableForPage = Math.max(0, sortedPosts.length - offset);
+  if (availableForPage === 0) {
+    console.log(`📊 Page ${page}: No posts available for this page`);
+    return [];
+  }
+
+  // Take the slice for this specific page
+  const startIndex = offset;
+  const endIndex = Math.min(startIndex + limit, sortedPosts.length);
+  let paginatedPosts = sortedPosts.slice(startIndex, endIndex);
+
+  // Add some variety by shuffling within the page results only
+  paginatedPosts = paginatedPosts.sort(() => Math.random() - 0.5);
+
+  // Final verification: ensure no duplicates in result
+  const finalPosts = [];
+  const finalSeenIds = new Set<string>();
+  
+  for (const post of paginatedPosts) {
+    if (!finalSeenIds.has(post.id)) {
+      finalSeenIds.add(post.id);
+      finalPosts.push(post);
+    }
+  }
+
+  console.log(`📊 Page ${page}: Returned ${finalPosts.length}/${limit} unique posts from ${totalAvailable} total available (offset: ${offset})`);
+  
+  // Debug: Log post IDs to verify uniqueness
+  const resultIds = finalPosts.map(p => p.id);
+  const uniqueResultIds = new Set(resultIds);
+  if (resultIds.length !== uniqueResultIds.size) {
+    console.error('❌ STILL HAVE DUPLICATES IN RESULT!', {
+      totalReturned: resultIds.length,
+      uniqueCount: uniqueResultIds.size,
+      duplicateIds: resultIds.filter((id, index) => resultIds.indexOf(id) !== index)
+    });
+  }
+  
   return finalPosts;
 };
 
