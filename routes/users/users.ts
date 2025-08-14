@@ -60,7 +60,7 @@ router.post('/register', async (req: Request, res: Response) => {
 
     // Validate required fields
     if (!full_name || !email || !password || !full_address || !latitude || !longitude) {
-      console.log('Missing required fields:', { full_name, email, password, full_address, latitude, longitude });
+      console.log('Missing required fields:', { full_name, email, password: !!password, full_address, latitude, longitude });
       return res.status(400).json({ error: 'All fields are required' });
     }
 
@@ -76,10 +76,6 @@ router.post('/register', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Email already exists' });
     }
 
-    // Hash the password
-    // const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-    // console.log('Password hashed successfully for email:', email);
-
     // Create user with Supabase Auth
     const { data, error } = await supabase.auth.signUp({
       email,
@@ -91,7 +87,9 @@ router.post('/register', async (req: Request, res: Response) => {
           latitude, 
           longitude 
         },
-        emailRedirectTo: 'http://localhost:5173'
+        emailRedirectTo: process.env.NODE_ENV === 'production' 
+          ? 'https://pin-oy.vercel.app' 
+          : 'http://localhost:5173'
       }
     });
 
@@ -105,29 +103,6 @@ router.post('/register', async (req: Request, res: Response) => {
       return res.status(500).json({ error: 'User creation failed' });
     }
 
-    // console.log('User created in auth:', data.user.id);
-
-    // // Insert user data into users table with hashed password
-    // const { error: insertError } = await supabase
-    //   .from('users')
-    //   .insert({
-    //     id: data.user.id,
-    //     full_name,
-    //     email,
-    //     password_hash: passwordHash,
-    //     full_address,
-    //     latitude,
-    //     longitude,
-    //     email_verified: false,
-    //     created_at: new Date().toISOString(),
-    //     updated_at: new Date().toISOString()
-    //   });
-
-    // if (insertError) {
-    //   console.error('Database insert error:', insertError);
-    //   return res.status(500).json({ error: 'Failed to save user data' });
-    // }
-
     console.log('User registration completed successfully');
     res.status(201).json({ message: 'User registered', userId: data.user.id });
   } catch (error) {
@@ -137,7 +112,7 @@ router.post('/register', async (req: Request, res: Response) => {
 });
 
 const url = process.env.NODE_ENV === 'production' 
-  ? 'https://pin-oy.vercel.apps' 
+  ? 'https://pin-oy.vercel.app' 
   : 'http://localhost:5173'
 
 // Forgot Password endpoint
@@ -154,7 +129,6 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
     console.log('Attempting to send reset email for:', email);
 
     // Send password reset email via Supabase Auth
-    // The redirect URL should handle the Supabase auth flow
     const { error: authError } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${url}/reset-password`
     });
@@ -265,12 +239,6 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 
     // Check if email is verified
-    const { data: userData } = await supabase
-      .from('users')
-      .select('email_verified')
-      .eq('id', data.user.id)
-      .single();
-
     if (!data.user.email_confirmed_at) {
       console.log('Email not verified for user:', data.user.id);
       return res.status(403).json({ error: 'Email not verified' });
@@ -294,26 +262,64 @@ router.put('/profile', authenticate, async (req: Request, res: Response) => {
     const { full_name, email, full_address, latitude, longitude } = req.body;
     const userId = (req as any).user.id;
 
-    // Note: We skip updating auth metadata from backend since it requires user session
-    // The frontend will handle auth metadata updates after successful database update
-    console.log('Skipping auth metadata update from backend (requires user session)');
+    console.log('Updating profile for user:', userId, { full_name, email, full_address, latitude, longitude });
 
-    // Update users table
-    const { error: dbError } = await supabase
+    // First, try to update the users table
+    const { data: existingUser, error: fetchError } = await supabase
       .from('users')
-      .update({
-        full_name,
-        email,
-        full_address,
-        latitude,
-        longitude,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', userId);
+      .select('id')
+      .eq('id', userId)
+      .single();
 
-    if (dbError) {
-      console.error('Database update error:', dbError);
-      return res.status(500).json({ error: 'Failed to update user profile' });
+    if (fetchError && fetchError.code === 'PGRST116') {
+      // User doesn't exist in users table, create them
+      console.log('User not found in users table, creating entry...');
+      
+      const { error: insertError } = await supabase
+        .from('users')
+        .insert({
+          id: userId,
+          full_name,
+          email,
+          full_address,
+          latitude,
+          longitude,
+          email_verified: true, // Since they're logged in, email is verified
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+
+      if (insertError) {
+        console.error('Database insert error:', insertError);
+        return res.status(500).json({ error: 'Failed to create user profile' });
+      }
+      
+      console.log('User profile created successfully');
+    } else if (fetchError) {
+      console.error('Database fetch error:', fetchError);
+      return res.status(500).json({ error: 'Failed to fetch user data' });
+    } else {
+      // User exists, update them
+      console.log('User found in users table, updating...');
+      
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({
+          full_name,
+          email,
+          full_address,
+          latitude,
+          longitude,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', userId);
+
+      if (updateError) {
+        console.error('Database update error:', updateError);
+        return res.status(500).json({ error: 'Failed to update user profile' });
+      }
+      
+      console.log('User profile updated successfully');
     }
 
     res.json({ message: 'Profile updated successfully' });
@@ -334,25 +340,69 @@ router.post('/profile/picture', authenticate, upload.single('profile_picture'), 
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
+    console.log('Uploading profile picture for user:', userId);
+
     // Upload file to Supabase Storage
     const profilePictureUrl = await uploadProfilePicture(file, userId);
+    
+    console.log('Profile picture uploaded to storage:', profilePictureUrl);
 
-    // Note: We skip updating auth metadata from backend since it requires user session
-    // The frontend will handle auth metadata updates after successful upload
-    console.log('Skipping auth metadata update from backend (requires user session)');
-
-    // Update users table
-    const { error: dbError } = await supabase
+    // First, check if user exists in users table
+    const { data: existingUser, error: fetchError } = await supabase
       .from('users')
-      .update({ 
-        profile_picture: profilePictureUrl, 
-        updated_at: new Date().toISOString() 
-      })
-      .eq('id', userId);
+      .select('id, full_name, email')
+      .eq('id', userId)
+      .single();
 
-    if (dbError) {
-      console.error('Database profile picture update error:', dbError);
-      return res.status(500).json({ error: 'Failed to save profile picture' });
+    if (fetchError && fetchError.code === 'PGRST116') {
+      // User doesn't exist in users table, create them with profile picture
+      console.log('User not found in users table, creating entry with profile picture...');
+      
+      // Get user data from auth to create the profile
+      const { data: authUser } = await supabase.auth.admin.getUserById(userId);
+      
+      const { error: insertError } = await supabase
+        .from('users')
+        .insert({
+          id: userId,
+          full_name: authUser.user?.user_metadata?.full_name || 'User',
+          email: authUser.user?.email || '',
+          full_address: authUser.user?.user_metadata?.full_address || '',
+          latitude: authUser.user?.user_metadata?.latitude || 0,
+          longitude: authUser.user?.user_metadata?.longitude || 0,
+          profile_picture: profilePictureUrl,
+          email_verified: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+
+      if (insertError) {
+        console.error('Database insert error:', insertError);
+        return res.status(500).json({ error: 'Failed to create user profile with picture' });
+      }
+      
+      console.log('User profile created with profile picture successfully');
+    } else if (fetchError) {
+      console.error('Database fetch error:', fetchError);
+      return res.status(500).json({ error: 'Failed to fetch user data' });
+    } else {
+      // User exists, update profile picture
+      console.log('User found in users table, updating profile picture...');
+      
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({ 
+          profile_picture: profilePictureUrl, 
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', userId);
+
+      if (updateError) {
+        console.error('Database profile picture update error:', updateError);
+        return res.status(500).json({ error: 'Failed to save profile picture' });
+      }
+      
+      console.log('Profile picture updated in database successfully');
     }
 
     res.json({ 
@@ -374,22 +424,62 @@ router.post('/profile/picture', authenticate, upload.single('profile_picture'), 
   }
 });
 
-// Get user profile (optional endpoint for debugging)
+// Get user profile (main endpoint for fetching user data)
 router.get('/profile', authenticate, async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
     
+    console.log('Fetching profile for user:', userId);
+    
+    // First try to get from users table
     const { data: userData, error } = await supabase
       .from('users')
       .select('*')
       .eq('id', userId)
       .single();
 
-    if (error) {
+    if (error && error.code === 'PGRST116') {
+      // User doesn't exist in users table, create them from auth data
+      console.log('User not found in users table, creating from auth data...');
+      
+      const { data: authUser } = await supabase.auth.admin.getUserById(userId);
+      
+      if (!authUser.user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      const newUserData = {
+        id: userId,
+        full_name: authUser.user.user_metadata?.full_name || 'User',
+        email: authUser.user.email || '',
+        full_address: authUser.user.user_metadata?.full_address || '',
+        latitude: authUser.user.user_metadata?.latitude || 0,
+        longitude: authUser.user.user_metadata?.longitude || 0,
+        profile_picture: authUser.user.user_metadata?.profile_picture || null,
+        email_verified: !!authUser.user.email_confirmed_at,
+        created_at: authUser.user.created_at,
+        updated_at: new Date().toISOString()
+      };
+      
+      const { data: insertedUser, error: insertError } = await supabase
+        .from('users')
+        .insert(newUserData)
+        .select()
+        .single();
+
+      if (insertError) {
+        console.error('Failed to create user in database:', insertError);
+        return res.status(500).json({ error: 'Failed to create user profile' });
+      }
+      
+      console.log('User profile created from auth data');
+      return res.json({ user: insertedUser });
+    } else if (error) {
       console.error('Profile fetch error:', error);
       return res.status(500).json({ error: 'Failed to fetch profile' });
     }
 
+    console.log('Profile fetched successfully:', userData?.full_name);
     res.json({ user: userData });
   } catch (error) {
     console.error('Profile endpoint error:', error);
@@ -419,6 +509,5 @@ router.get('/:userId', async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Failed to fetch user profile' });
   }
 });
-
 
 export default router;
